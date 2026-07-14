@@ -62,6 +62,11 @@ _BLOCK_COLORS: dict[str, tuple[int, int, int]] = {
     "end_stone": (219, 219, 165), "grass": (60, 92, 40), "tall_grass": (60, 92, 40),
     "fern": (58, 95, 58), "cactus": (60, 100, 40), "pumpkin": (192, 108, 21),
     "melon": (108, 148, 40), "glass": (220, 236, 236), "bookshelf": (140, 106, 63),
+    "torch": (226, 177, 76), "wall_torch": (226, 177, 76),
+    "soul_torch": (94, 168, 178), "soul_wall_torch": (94, 168, 178),
+    "redstone_torch": (176, 54, 43), "redstone_wall_torch": (176, 54, 43),
+    "chest": (126, 82, 35), "trapped_chest": (134, 80, 38),
+    "ender_chest": (45, 70, 78), "hopper": (76, 78, 82),
 }
 
 
@@ -77,6 +82,13 @@ def get_block_color(name: str, resource_pack=None) -> tuple[int, int, int]:
     color = _BLOCK_COLORS.get(name)
     if color is not None:
         return color
+
+    for suffix in ("_wall_hanging_sign", "_hanging_sign", "_wall_sign", "_sign"):
+        if name.endswith(suffix):
+            wood = name[: -len(suffix)]
+            color = _BLOCK_COLORS.get(f"{wood}_planks")
+            if color is not None:
+                return color
 
     for dye_name, rgb in DYE_COLORS.items():
         if name == dye_name or name.startswith(dye_name + "_") or name.endswith("_" + dye_name):

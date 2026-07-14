@@ -153,7 +153,16 @@ const Vision = (() => {
 
   function entryTile(entry, faceName, textured) {
     if (!textured || entry.length < 6 || typeof entry[3] !== "number") return -1;
+    if (usesFlatColor(entryName(entry))) return -1;
     return faceName === "top" ? entry[3] : faceName === "bottom" ? entry[5] : entry[4];
+  }
+
+  function usesFlatColor(name) {
+    return name === "water" || name === "lava"
+      || name === "hopper"
+      || name === "torch" || name.endsWith("_torch")
+      || name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest")
+      || name.endsWith("_sign") || name.endsWith("_hanging_sign");
   }
 
   function shapeFor(name) {
@@ -181,18 +190,12 @@ const Vision = (() => {
     };
     if (name.endsWith("_button")) return { opaque: false, boxes: [[[0.3125, 0.375, 0], [0.6875, 0.625, 0.125]]] };
     if (name.endsWith("_pressure_plate")) return { opaque: false, boxes: [[[0.0625, 0, 0.0625], [0.9375, 0.0625, 0.9375]]] };
-    if (name === "torch" || name === "soul_torch" || name === "redstone_torch") return {
+    if (name === "torch" || (name.endsWith("_torch") && !name.endsWith("_wall_torch"))) return {
       opaque: false,
-      boxes: [
-        [[0.375, 0.6875, 0.375], [0.625, 0.9375, 0.625]],
-      ],
       planes: TORCH_PLANES,
     };
     if (name.endsWith("_wall_torch")) return {
       opaque: false,
-      boxes: [
-        [[0.375, 0.5625, 0], [0.625, 0.8125, 0.25]],
-      ],
       planes: [
         [[0.4375, 0.125, 0], [0.5625, 0.125, 0.25], [0.5625, 0.8125, 0.25], [0.4375, 0.8125, 0]],
         [[0.5625, 0.125, 0], [0.4375, 0.125, 0.25], [0.4375, 0.8125, 0.25], [0.5625, 0.8125, 0]],
@@ -229,10 +232,10 @@ const Vision = (() => {
     if (name.endsWith("_sign") || name.endsWith("_hanging_sign")) return {
       opaque: false,
       boxes: [
-        [[0.46875, 0, 0.46875], [0.53125, 0.625, 0.53125]],
-        [[0.0625, 0.5, 0.4375], [0.9375, 0.9375, 0.5625]],
+        [[0.46875, 0, 0.46875], [0.53125, 0.5625, 0.53125]],
+        [[0.0625, 0.375, 0.4375], [0.9375, 0.8125, 0.5625]],
       ],
-      planes: [[[0.0625, 0.5, 0.565], [0.9375, 0.5, 0.565], [0.9375, 0.9375, 0.565], [0.0625, 0.9375, 0.565]]],
+      planes: [[[0.0625, 0.375, 0.565], [0.9375, 0.375, 0.565], [0.9375, 0.8125, 0.565], [0.0625, 0.8125, 0.565]]],
     };
     if (name === "flower_pot" || name.startsWith("potted_")) return {
       opaque: false,
