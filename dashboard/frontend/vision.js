@@ -28,10 +28,6 @@ const Vision = (() => {
     [[0.15, 0, 0.15], [0.85, 0, 0.85], [0.85, 1, 0.85], [0.15, 1, 0.15]],
     [[0.85, 0, 0.15], [0.15, 0, 0.85], [0.15, 1, 0.85], [0.85, 1, 0.15]],
   ];
-  const TORCH_PLANES = [
-    [[0.4375, 0, 0.4375], [0.5625, 0, 0.5625], [0.5625, 0.875, 0.5625], [0.4375, 0.875, 0.4375]],
-    [[0.5625, 0, 0.4375], [0.4375, 0, 0.5625], [0.4375, 0.875, 0.5625], [0.5625, 0.875, 0.4375]],
-  ];
   const PART_COLORS = {
     water: [0.25, 0.47, 0.9],
     lava: [1.0, 0.38, 0.08],
@@ -273,18 +269,39 @@ const Vision = (() => {
     return Math.round(rot / 4) % 4;
   }
 
+  function wallTorchFacing(name, offset) {
+    return facing4(offset, false, name.includes("redstone") ? 2 : 1);
+  }
+
+  function stairShape(offset) {
+    const facing = facing4(offset, false, 20);
+    const halfTop = offset >= 0 && (Math.floor(offset / 10) % 2) === 0;
+    const shapeIdx = offset >= 0 ? Math.floor(offset / 2) % 5 : 0;
+    const shape = ["straight", "inner_left", "inner_right", "outer_left", "outer_right"][shapeIdx] || "straight";
+    const slab = halfTop ? [[0, 0.5, 0], [1, 1, 1]] : [[0, 0, 0], [1, 0.5, 1]];
+    const y0 = halfTop ? 0 : 0.5;
+    const y1 = halfTop ? 0.5 : 1;
+    let boxes;
+    if (shape === "inner_left") {
+      boxes = [slab, [[0, y0, 0.5], [1, y1, 1]], [[0, y0, 0], [0.5, y1, 0.5]]];
+    } else if (shape === "inner_right") {
+      boxes = [slab, [[0, y0, 0.5], [1, y1, 1]], [[0.5, y0, 0], [1, y1, 0.5]]];
+    } else if (shape === "outer_left") {
+      boxes = [slab, [[0, y0, 0.5], [0.5, y1, 1]]];
+    } else if (shape === "outer_right") {
+      boxes = [slab, [[0.5, y0, 0.5], [1, y1, 1]]];
+    } else {
+      boxes = [slab, [[0, y0, 0.5], [1, y1, 1]]];
+    }
+    return rotateShapeY({ opaque: false, boxes }, turnsForFacing(facing));
+  }
+
   function shapeFor(name, stateOffset = -1) {
     if (!name) return { opaque: true, boxes: FULL_CUBE };
     if (name === "water") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], color: PART_COLORS.water, shade: 1 }] };
     if (name === "lava") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], color: PART_COLORS.lava, shade: 1 }] };
     if (name.endsWith("_slab")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.5, 1]]] };
-    if (name.endsWith("_stairs")) return {
-      opaque: false,
-      boxes: [
-        [[0, 0, 0], [1, 0.5, 1]],
-        [[0, 0.5, 0.5], [1, 1, 1]],
-      ],
-    };
+    if (name.endsWith("_stairs")) return stairShape(stateOffset);
     if (name.endsWith("_carpet")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.0625, 1]]] };
     if (name.endsWith("_bed")) return {
       opaque: false,
@@ -354,7 +371,7 @@ const Vision = (() => {
           { plane: [[0.43, 0.08, 0.02], [0.57, 0.08, 0.16], [0.57, 0.72, 0.42], [0.43, 0.72, 0.28]], color: PART_COLORS.torchWood },
           { plane: [[0.57, 0.08, 0.02], [0.43, 0.08, 0.16], [0.43, 0.72, 0.42], [0.57, 0.72, 0.28]], color: PART_COLORS.torchWood },
         ],
-      }, turnsForFacing(facing4(stateOffset))),
+      }, turnsForFacing(wallTorchFacing(name, stateOffset))),
     };
     if (name === "lantern" || name === "soul_lantern" || name.endsWith("_copper_lantern")) return {
       opaque: false,
