@@ -157,6 +157,13 @@ const Vision = (() => {
     return faceName === "top" ? entry[3] : faceName === "bottom" ? entry[5] : entry[4];
   }
 
+  function entryStateOffset(entry) {
+    if (typeof entry[entry.length - 1] !== "string") return -1;
+    if (entry.length >= 8 && typeof entry[entry.length - 2] === "number") return entry[entry.length - 2];
+    if (entry.length === 5 && typeof entry[3] === "number") return entry[3];
+    return -1;
+  }
+
   function usesFlatColor(name) {
     return name === "water" || name === "lava"
       || name === "hopper"
@@ -165,7 +172,49 @@ const Vision = (() => {
       || name.endsWith("_sign") || name.endsWith("_hanging_sign");
   }
 
-  function shapeFor(name) {
+  function rotateCornerY(c, turns) {
+    let x = c[0], z = c[2];
+    for (let i = 0; i < turns; i++) [x, z] = [z, 1 - x];
+    return [x, c[1], z];
+  }
+
+  function rotateBoxY(box, turns) {
+    const [min, max] = box;
+    const corners = [
+      [min[0], min[1], min[2]], [min[0], min[1], max[2]], [min[0], max[1], min[2]], [min[0], max[1], max[2]],
+      [max[0], min[1], min[2]], [max[0], min[1], max[2]], [max[0], max[1], min[2]], [max[0], max[1], max[2]],
+    ].map(c => rotateCornerY(c, turns));
+    const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]), zs = corners.map(c => c[2]);
+    return [[Math.min(...xs), Math.min(...ys), Math.min(...zs)], [Math.max(...xs), Math.max(...ys), Math.max(...zs)]];
+  }
+
+  function rotateShapeY(shape, turns) {
+    turns = ((turns % 4) + 4) % 4;
+    if (turns === 0) return shape;
+    return {
+      opaque: shape.opaque,
+      boxes: (shape.boxes || []).map(box => rotateBoxY(box, turns)),
+      planes: (shape.planes || []).map(plane => plane.map(c => rotateCornerY(c, turns))),
+    };
+  }
+
+  function facing4(offset, groupedByTwo = false, groupSize = 1) {
+    if (offset < 0) return "north";
+    const i = groupedByTwo ? Math.floor(offset / 2) % 4 : Math.floor(offset / groupSize) % 4;
+    return ["north", "south", "west", "east"][i] || "north";
+  }
+
+  function turnsForFacing(facing) {
+    return { north: 0, south: 2, west: 1, east: 3 }[facing] || 0;
+  }
+
+  function signTurns(offset) {
+    if (offset < 0) return 0;
+    const rot = Math.floor(offset / 2) % 16;
+    return Math.round(rot / 4) % 4;
+  }
+
+  function shapeFor(name, stateOffset = -1) {
     if (!name) return { opaque: true, boxes: FULL_CUBE };
     if (name === "water" || name === "lava") return { opaque: false, boxes: [[[0, 0, 0], [1, 0.875, 1]]] };
     if (name.endsWith("_slab")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.5, 1]]] };
@@ -233,11 +282,16 @@ const Vision = (() => {
       planes: TORCH_PLANES,
     };
     if (name.endsWith("_wall_torch")) return {
-      opaque: false,
-      planes: [
-        [[0.4375, 0.125, 0], [0.5625, 0.125, 0.25], [0.5625, 0.8125, 0.25], [0.4375, 0.8125, 0]],
-        [[0.5625, 0.125, 0], [0.4375, 0.125, 0.25], [0.4375, 0.8125, 0.25], [0.5625, 0.8125, 0]],
-      ],
+      ...rotateShapeY({
+        opaque: false,
+        boxes: [
+          [[0.375, 0.625, 0], [0.625, 0.875, 0.25]],
+        ],
+        planes: [
+          [[0.4375, 0.0625, 0], [0.5625, 0.0625, 0.25], [0.5625, 0.8125, 0.375], [0.4375, 0.8125, 0.125]],
+          [[0.5625, 0.0625, 0], [0.4375, 0.0625, 0.25], [0.4375, 0.8125, 0.375], [0.5625, 0.8125, 0.125]],
+        ],
+      }, turnsForFacing(facing4(stateOffset))),
     };
     if (name === "lantern" || name === "soul_lantern" || name.endsWith("_copper_lantern")) return {
       opaque: false,
@@ -262,21 +316,30 @@ const Vision = (() => {
       ],
     };
     if (name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest")) return {
-      opaque: false,
-      boxes: [
-        [[0.0625, 0, 0.0625], [0.9375, 0.875, 0.9375]],
-        [[0.4375, 0.375, 0], [0.5625, 0.625, 0.0625]],
-      ],
+      ...rotateShapeY({
+        opaque: false,
+        boxes: [
+          [[0.0625, 0, 0.0625], [0.9375, 0.875, 0.9375]],
+          [[0.4375, 0.375, 0], [0.5625, 0.625, 0.0625]],
+        ],
+      }, turnsForFacing(facing4(stateOffset, false, 6))),
     };
-    if (name === "hopper") return {
-      opaque: false,
-      boxes: [
-        [[0.0625, 0.625, 0.0625], [0.9375, 1, 0.9375]],
-        [[0.1875, 0.375, 0.1875], [0.8125, 0.625, 0.8125]],
-        [[0.375, 0, 0.375], [0.625, 0.25, 0.625]],
-        [[0.3125, 0.25, 0.3125], [0.6875, 0.375, 0.6875]],
-      ],
-    };
+    if (name === "hopper") {
+      const dirs = ["down", "north", "south", "west", "east"];
+      const facing = dirs[stateOffset >= 0 ? stateOffset % 5 : 0] || "down";
+      const sideSpout = facing === "down" ? [] : rotateShapeY({
+        boxes: [[[0.375, 0.125, 0], [0.625, 0.375, 0.375]]],
+      }, turnsForFacing(facing)).boxes;
+      return {
+        opaque: false,
+        boxes: [
+          [[0.0625, 0.625, 0.0625], [0.9375, 1, 0.9375]],
+          [[0.1875, 0.375, 0.1875], [0.8125, 0.625, 0.8125]],
+          [[0.3125, 0.25, 0.3125], [0.6875, 0.375, 0.6875]],
+          ...(facing === "down" ? [[[0.375, 0, 0.375], [0.625, 0.25, 0.625]]] : sideSpout),
+        ],
+      };
+    }
     if (name === "cauldron" || name.endsWith("_cauldron")) return {
       opaque: false,
       boxes: [
@@ -296,17 +359,21 @@ const Vision = (() => {
       ],
     };
     if (name.endsWith("_wall_sign")) return {
-      opaque: false,
-      boxes: [[[0.0625, 0.25, 0], [0.9375, 0.75, 0.0625]]],
-      planes: [[[0.0625, 0.25, 0.065], [0.9375, 0.25, 0.065], [0.9375, 0.75, 0.065], [0.0625, 0.75, 0.065]]],
+      ...rotateShapeY({
+        opaque: false,
+        boxes: [[[0.0625, 0.25, 0], [0.9375, 0.75, 0.0625]]],
+        planes: [[[0.0625, 0.25, 0.065], [0.9375, 0.25, 0.065], [0.9375, 0.75, 0.065], [0.0625, 0.75, 0.065]]],
+      }, turnsForFacing(facing4(stateOffset, true))),
     };
     if (name.endsWith("_sign") || name.endsWith("_hanging_sign")) return {
-      opaque: false,
-      boxes: [
-        [[0.46875, 0, 0.46875], [0.53125, 0.5625, 0.53125]],
-        [[0.0625, 0.375, 0.4375], [0.9375, 0.8125, 0.5625]],
-      ],
-      planes: [[[0.0625, 0.375, 0.565], [0.9375, 0.375, 0.565], [0.9375, 0.8125, 0.565], [0.0625, 0.8125, 0.565]]],
+      ...rotateShapeY({
+        opaque: false,
+        boxes: [
+          [[0.46875, 0, 0.46875], [0.53125, 0.5625, 0.53125]],
+          [[0.0625, 0.375, 0.4375], [0.9375, 0.8125, 0.5625]],
+        ],
+        planes: [[[0.0625, 0.375, 0.565], [0.9375, 0.375, 0.565], [0.9375, 0.8125, 0.565], [0.0625, 0.8125, 0.565]]],
+      }, signTurns(stateOffset)),
     };
     if (name === "flower_pot" || name.startsWith("potted_")) return {
       opaque: false,
@@ -327,11 +394,13 @@ const Vision = (() => {
 
   function paletteMeta(entry, idx) {
     const name = entryName(entry);
-    const shape = idx === 0 ? { opaque: false } : shapeFor(name);
+    const stateOffset = entryStateOffset(entry);
+    const shape = idx === 0 ? { opaque: false } : shapeFor(name, stateOffset);
     return {
       color: [entry[0] / 255, entry[1] / 255, entry[2] / 255],
       entry,
       name,
+      stateOffset,
       opaque: shape.opaque === true,
       shape,
     };

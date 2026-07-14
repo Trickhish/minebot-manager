@@ -236,6 +236,8 @@ def _voxel_payload(bot, radius: int, up: int, down: int) -> dict:
         entry = list(get_block_color(name))
         if atlas is not None:  # append [top, side, bottom] atlas tile indices
             entry += list(atlas.face_tiles(name))
+        info = bt.range_for(sid)
+        entry.append(sid - info[0] if info is not None else -1)
         entry.append(name)
         palette.append(entry)
     idx_grid = lut[ids]  # (ny, nz, nx) uint16 palette indices

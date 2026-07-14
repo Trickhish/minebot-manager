@@ -60,5 +60,13 @@ class BlockTable:
         lo, hi, name = self._ranges[i]
         return name if lo <= state_id <= hi else "unknown"
 
+    def range_for(self, state_id: int):
+        """Return ``(lo, hi, name)`` for a global block state id, or None."""
+        i = bisect.bisect_right(self._starts, state_id) - 1
+        if i < 0:
+            return None
+        lo, hi, name = self._ranges[i]
+        return (lo, hi, name) if lo <= state_id <= hi else None
+
     def is_air(self, state_id: int) -> bool:
         return self.name_for(state_id) in AIR_NAMES
