@@ -440,6 +440,10 @@ $("#vision-on").addEventListener("change", (e) => {
 $("#vision-range").addEventListener("change", (e) => {
   if (Vision.isOn()) Vision.setRange(Number(e.target.value));
 });
+$("#vision-renderer").value = Vision.renderer();
+$("#vision-renderer").addEventListener("change", (e) => {
+  Vision.setRenderer(e.target.value);
+});
 
 // Full-screen vision modal: reparent the (same) canvas into the modal and back,
 // so the WebGL context is reused rather than recreated.
@@ -449,14 +453,14 @@ function openVisionModal() {
     $("#vision-on").checked = true;
     $("#vision-on").dispatchEvent(new Event("change"));
   }
-  $("#vision-stage").appendChild($("#vision-canvas"));
+  $("#vision-stage").appendChild(Vision.element());
   $("#vision-modal").hidden = false;
   requestAnimationFrame(() => Vision.resize());
 }
 function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
   $("#vision-modal").hidden = true;
-  $(".vision-view").insertBefore($("#vision-canvas"), $("#vision-status"));
+  $(".vision-view").insertBefore(Vision.element(), $("#vision-status"));
   requestAnimationFrame(() => Vision.resize());
 }
 $("#vision-expand").addEventListener("click", openVisionModal);

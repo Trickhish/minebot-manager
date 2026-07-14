@@ -44,10 +44,12 @@ const Vision = (() => {
   ]);
 
   let canvas, gl, prog, loc = {};
+  let prismarineFrame = null;
   let vbo, vertexCount = 0;
   let botId = null, range = 40;
   let pose = null;
   let geomTimer = null, rafHandle = null, fetching = false;
+  let rendererMode = localStorage.getItem("visionRenderer") || "custom";
 
   // texture atlas (loaded once, shared across bots)
   let atlasState = "init";   // init | loading | loaded | none
@@ -57,6 +59,33 @@ const Vision = (() => {
   function status(msg) {
     const el = document.getElementById("vision-status");
     if (el) el.textContent = msg;
+  }
+
+  function activeElement() {
+    return rendererMode === "prismarine" && prismarineFrame ? prismarineFrame : canvas;
+  }
+
+  function ensurePrismarineFrame() {
+    if (prismarineFrame) return prismarineFrame;
+    prismarineFrame = document.createElement("iframe");
+    prismarineFrame.id = "vision-prismarine";
+    prismarineFrame.title = "Prismarine renderer";
+    prismarineFrame.hidden = true;
+    prismarineFrame.setAttribute("allow", "fullscreen; gamepad; pointer-lock");
+    prismarineFrame.setAttribute("referrerpolicy", "same-origin");
+    const view = document.querySelector(".vision-view");
+    if (view) view.insertBefore(prismarineFrame, document.getElementById("vision-status"));
+    return prismarineFrame;
+  }
+
+  function showCustomCanvas() {
+    if (canvas) canvas.hidden = false;
+    if (prismarineFrame) prismarineFrame.hidden = true;
+  }
+
+  function showPrismarineFrame() {
+    if (canvas) canvas.hidden = true;
+    ensurePrismarineFrame().hidden = false;
   }
 
   // -- GL setup --------------------------------------------------------------
@@ -517,6 +546,29 @@ const Vision = (() => {
     }
   }
 
+  async function attachPrismarine(id, r) {
+    botId = id;
+    if (r) range = r;
+    pose = null; vertexCount = 0;
+    showPrismarineFrame();
+    clearInterval(geomTimer); geomTimer = null;
+    if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
+    if (gl) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    status("loading Prismarine…");
+    try {
+      const res = await fetch("prismarine/index.html", { method: "HEAD", cache: "no-store" });
+      if (!res.ok) {
+        status("Prismarine renderer bundle not installed");
+        return;
+      }
+      const frame = ensurePrismarineFrame();
+      frame.src = `prismarine/index.html?bot=${encodeURIComponent(id)}&range=${encodeURIComponent(range)}`;
+      status("Prismarine renderer");
+    } catch {
+      status("Prismarine renderer unavailable");
+    }
+  }
+
   // -- render loop -----------------------------------------------------------
   function syncSize() {
     if (!canvas) return;
@@ -591,7 +643,12 @@ const Vision = (() => {
   // -- public API ------------------------------------------------------------
   return {
     attach(id, r) {
+      if (rendererMode === "prismarine") {
+        attachPrismarine(id, r);
+        return;
+      }
       if (!initGL()) return;
+      showCustomCanvas();
       botId = id;
       if (r) range = r;
       pose = null; vertexCount = 0;
@@ -609,9 +666,19 @@ const Vision = (() => {
       clearInterval(geomTimer); geomTimer = null;
       if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
       if (gl) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      if (prismarineFrame) {
+        prismarineFrame.removeAttribute("src");
+        prismarineFrame.hidden = true;
+      }
+      if (canvas) canvas.hidden = false;
       status("disabled");
     },
-    setRange(r) { range = r; if (botId) refreshGeometry(); },
+    setRange(r) {
+      range = r;
+      if (!botId) return;
+      if (rendererMode === "prismarine") attachPrismarine(botId, range);
+      else refreshGeometry();
+    },
     resize() { syncSize(); },
     setPose(p) {
       if (!botId || !pose || p == null || p.x == null) return;
@@ -620,5 +687,20 @@ const Vision = (() => {
       if (p.pitch != null) pose.pitch = p.pitch;
     },
     isOn() { return botId !== null; },
+    renderer() { return rendererMode; },
+    setRenderer(mode) {
+      rendererMode = mode === "prismarine" ? "prismarine" : "custom";
+      localStorage.setItem("visionRenderer", rendererMode);
+      if (botId) {
+        const id = botId, r = range;
+        this.detach();
+        this.attach(id, r);
+      }
+    },
+    element() {
+      if (rendererMode === "prismarine") return ensurePrismarineFrame();
+      if (!canvas) initGL();
+      return activeElement();
+    },
   };
 })();

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260714-state-oriented-shapes">
+  <link rel="stylesheet" href="style.css?v=20260714-renderer-switch">
 </head>
 <body>
   <header>
@@ -116,6 +116,12 @@
                     <option value="56">56</option>
                   </select>
                 </label>
+                <label class="map-radius">renderer
+                  <select id="vision-renderer">
+                    <option value="custom" selected>Custom</option>
+                    <option value="prismarine">Prismarine</option>
+                  </select>
+                </label>
                 <label class="map-live"><input type="checkbox" id="vision-on"> enable</label>
                 <button id="vision-expand" class="mini" title="Expand to full screen">⛶</button>
               </div>
@@ -212,7 +218,7 @@
     </div>
   </div>
 
-  <script src="vision.js?v=20260714-state-oriented-shapes"></script>
-  <script src="app.js?v=20260714-state-oriented-shapes"></script>
+  <script src="vision.js?v=20260714-renderer-switch"></script>
+  <script src="app.js?v=20260714-renderer-switch"></script>
 </body>
 </html>
