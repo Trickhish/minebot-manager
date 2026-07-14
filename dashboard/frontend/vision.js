@@ -23,6 +23,21 @@ const Vision = (() => {
   ];
   const TRI = [0, 1, 2, 0, 2, 3];              // two triangles from 4 corners
   const FLOATS = 10, STRIDE = FLOATS * 4;      // pos3, color3, uv2, shade1, tex1
+  const FULL_CUBE = [[[0, 0, 0], [1, 1, 1]]];
+  const CROSSED_PLANES = [
+    [[0.15, 0, 0.15], [0.85, 0, 0.85], [0.85, 1, 0.85], [0.15, 1, 0.15]],
+    [[0.85, 0, 0.15], [0.15, 0, 0.85], [0.15, 1, 0.85], [0.85, 1, 0.15]],
+  ];
+  const PLANT_NAMES = new Set([
+    "grass", "short_grass", "tall_grass", "fern", "large_fern", "dead_bush",
+    "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet",
+    "red_tulip", "orange_tulip", "white_tulip", "pink_tulip", "oxeye_daisy",
+    "cornflower", "lily_of_the_valley", "wither_rose", "crimson_roots",
+    "warped_roots", "nether_sprouts", "sugar_cane", "kelp", "kelp_plant",
+    "wheat", "carrots", "potatoes", "beetroots", "nether_wart", "vine",
+    "cave_vines", "cave_vines_plant", "sweet_berry_bush", "pink_petals",
+    "wildflowers", "leaf_litter", "open_eyeblossom", "closed_eyeblossom",
+  ]);
 
   let canvas, gl, prog, loc = {};
   let vbo, vertexCount = 0;
@@ -127,6 +142,143 @@ const Vision = (() => {
   }
 
   // -- geometry --------------------------------------------------------------
+  function entryName(entry) {
+    const last = entry[entry.length - 1];
+    return typeof last === "string" ? last : "";
+  }
+
+  function entryTile(entry, faceName, textured) {
+    if (!textured || entry.length < 6 || typeof entry[3] !== "number") return -1;
+    return faceName === "top" ? entry[3] : faceName === "bottom" ? entry[5] : entry[4];
+  }
+
+  function isOpaqueCubeName(name) {
+    if (!name) return false;
+    return shapeFor(name).opaque;
+  }
+
+  function shapeFor(name) {
+    if (!name) return { opaque: true, boxes: FULL_CUBE };
+    if (name.endsWith("_slab")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.5, 1]]] };
+    if (name.endsWith("_carpet")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.0625, 1]]] };
+    if (name.endsWith("_pane") || name.endsWith("_bars")) return {
+      opaque: false,
+      boxes: [
+        [[0.4375, 0, 0], [0.5625, 1, 1]],
+        [[0, 0, 0.4375], [1, 1, 0.5625]],
+      ],
+    };
+    if (name.endsWith("_fence") || name.endsWith("_wall")) return {
+      opaque: false,
+      boxes: [
+        [[0.375, 0, 0.375], [0.625, 1, 0.625]],
+        [[0.4375, 0.375, 0], [0.5625, 0.75, 1]],
+        [[0, 0.375, 0.4375], [1, 0.75, 0.5625]],
+      ],
+    };
+    if (name.endsWith("_door") || name.endsWith("_trapdoor")) return {
+      opaque: false,
+      boxes: [[[0, 0, 0], [1, name.endsWith("_trapdoor") ? 0.1875 : 1, 0.1875]]],
+    };
+    if (name.endsWith("_button")) return { opaque: false, boxes: [[[0.3125, 0.375, 0], [0.6875, 0.625, 0.125]]] };
+    if (name.endsWith("_pressure_plate")) return { opaque: false, boxes: [[[0.0625, 0, 0.0625], [0.9375, 0.0625, 0.9375]]] };
+    if (name === "torch" || name === "soul_torch" || name === "redstone_torch") return {
+      opaque: false,
+      boxes: [
+        [[0.4375, 0, 0.4375], [0.5625, 0.625, 0.5625]],
+        [[0.375, 0.625, 0.375], [0.625, 0.875, 0.625]],
+      ],
+    };
+    if (name.endsWith("_wall_torch")) return {
+      opaque: false,
+      boxes: [
+        [[0.4375, 0.1875, 0], [0.5625, 0.6875, 0.25]],
+        [[0.375, 0.625, 0], [0.625, 0.875, 0.25]],
+      ],
+    };
+    if (name === "lantern" || name === "soul_lantern" || name.endsWith("_copper_lantern")) return {
+      opaque: false,
+      boxes: [
+        [[0.375, 0, 0.375], [0.625, 0.125, 0.625]],
+        [[0.3125, 0.125, 0.3125], [0.6875, 0.625, 0.6875]],
+        [[0.375, 0.625, 0.375], [0.625, 0.875, 0.625]],
+      ],
+    };
+    if (name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest")) return {
+      opaque: false,
+      boxes: [
+        [[0.0625, 0, 0.0625], [0.9375, 0.875, 0.9375]],
+        [[0.4375, 0.375, 0], [0.5625, 0.625, 0.0625]],
+      ],
+    };
+    if (name === "hopper") return {
+      opaque: false,
+      boxes: [
+        [[0.125, 0.625, 0.125], [0.875, 1, 0.875]],
+        [[0.25, 0.25, 0.25], [0.75, 0.625, 0.75]],
+        [[0.375, 0, 0.375], [0.625, 0.25, 0.625]],
+      ],
+    };
+    if (name === "flower_pot" || name.startsWith("potted_")) return {
+      opaque: false,
+      boxes: [
+        [[0.3125, 0, 0.3125], [0.6875, 0.375, 0.6875]],
+        [[0.25, 0.375, 0.25], [0.75, 0.5, 0.75]],
+      ],
+    };
+    if (name === "cactus") return { opaque: false, boxes: [[[0.0625, 0, 0.0625], [0.9375, 1, 0.9375]]] };
+    if (name === "cake") return { opaque: false, boxes: [[[0.0625, 0, 0.0625], [0.9375, 0.5, 0.9375]]] };
+    if (name === "snow") return { opaque: false, boxes: [[[0, 0, 0], [1, 0.125, 1]]] };
+    if (PLANT_NAMES.has(name) || name.endsWith("_sapling") || name.endsWith("_mushroom")) return {
+      opaque: false,
+      planes: CROSSED_PLANES,
+    };
+    return { opaque: true, boxes: FULL_CUBE };
+  }
+
+  function addVertex(data, wx, wy, wz, corner, color, uv, shade, tex) {
+    data.push(
+      wx + corner[0], wy + corner[1], wz + corner[2],
+      color[0], color[1], color[2],
+      uv[0], uv[1], shade, tex,
+    );
+  }
+
+  function faceTileUV(entry, name, textured) {
+    const tile = entryTile(entry, name, textured);
+    return tile >= 0 ? tileUV(tile) : null;
+  }
+
+  function emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured) {
+    const uv = faceTileUV(entry, faceName, textured);
+    const tex = uv ? 1 : 0;
+    const shade = FACE_SHADE[faceName] || 0.8;
+    for (const k of TRI) {
+      const t = uv ? uv[k] : [0, 0];
+      addVertex(data, wx, wy, wz, corners[k], color, t, shade, tex);
+    }
+  }
+
+  function emitBox(data, wx, wy, wz, min, max, entry, color, textured, occlude) {
+    const boxFaces = [
+      ["top", [[min[0], max[1], min[2]], [min[0], max[1], max[2]], [max[0], max[1], max[2]], [max[0], max[1], min[2]]], [0, 1, 0]],
+      ["bottom", [[min[0], min[1], max[2]], [min[0], min[1], min[2]], [max[0], min[1], min[2]], [max[0], min[1], max[2]]], [0, -1, 0]],
+      ["south", [[min[0], min[1], max[2]], [max[0], min[1], max[2]], [max[0], max[1], max[2]], [min[0], max[1], max[2]]], [0, 0, 1]],
+      ["north", [[max[0], min[1], min[2]], [min[0], min[1], min[2]], [min[0], max[1], min[2]], [max[0], max[1], min[2]]], [0, 0, -1]],
+      ["east", [[max[0], min[1], max[2]], [max[0], min[1], min[2]], [max[0], max[1], min[2]], [max[0], max[1], max[2]]], [1, 0, 0]],
+      ["west", [[min[0], min[1], min[2]], [min[0], min[1], max[2]], [min[0], max[1], max[2]], [min[0], max[1], min[2]]], [-1, 0, 0]],
+    ];
+    for (const [faceName, corners, d] of boxFaces) {
+      if (occlude && occlude(d)) continue;
+      emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured);
+    }
+  }
+
+  function emitPlane(data, wx, wy, wz, corners, entry, color, textured) {
+    emitFace(data, wx, wy, wz, corners, entry, color, "south", textured);
+    emitFace(data, wx, wy, wz, [corners[3], corners[2], corners[1], corners[0]], entry, color, "north", textured);
+  }
+
   function buildMesh(payload) {
     const [nx, ny, nz] = payload.dims;
     const [ox, oy, oz] = payload.origin;
@@ -150,21 +302,17 @@ const Vision = (() => {
           const idx = grid[(y * nz + z) * nx + x];
           if (idx === 0) continue;
           const entry = pal[idx];
-          const r = entry[0] / 255, g = entry[1] / 255, b = entry[2] / 255;
-          for (const [name, corners, d] of FACES) {
-            if (at(x + d[0], y + d[1], z + d[2]) !== 0) continue;   // hidden
-            const shade = FACE_SHADE[name];
-            let tile = -1;
-            if (textured && entry.length > 3)
-              tile = name === "top" ? entry[3] : name === "bottom" ? entry[5] : entry[4];
-            const uv = tile >= 0 ? tileUV(tile) : null;
-            const tex = uv ? 1 : 0;
-            const wx = ox + x, wy = oy + y, wz = oz + z;
-            for (const k of TRI) {
-              const c = corners[k], t = uv ? uv[k] : [0, 0];
-              data.push(wx + c[0], wy + c[1], wz + c[2], r, g, b, t[0], t[1], shade, tex);
-            }
-          }
+          const blockName = entryName(entry);
+          const shape = shapeFor(blockName);
+          const color = [entry[0] / 255, entry[1] / 255, entry[2] / 255];
+          const wx = ox + x, wy = oy + y, wz = oz + z;
+          const occlude = shape.opaque
+            ? (d) => isOpaqueCubeName(entryName(pal[at(x + d[0], y + d[1], z + d[2])] || []))
+            : null;
+          for (const box of shape.boxes || [])
+            emitBox(data, wx, wy, wz, box[0], box[1], entry, color, textured, occlude);
+          for (const plane of shape.planes || [])
+            emitPlane(data, wx, wy, wz, plane, entry, color, textured);
         }
 
     const arr = new Float32Array(data);
