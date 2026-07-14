@@ -574,7 +574,7 @@ const Vision = (() => {
         return;
       }
       const frame = ensurePrismarineFrame();
-      frame.src = `prismarine/index.html?v=20260714-refresh-modes&bot=${encodeURIComponent(id)}&range=${encodeURIComponent(range)}&refresh=${encodeURIComponent(refreshMs)}`;
+      frame.src = `prismarine/index.html?v=20260714-instanced-cubes&bot=${encodeURIComponent(id)}&range=${encodeURIComponent(range)}&refresh=${encodeURIComponent(refreshMs)}`;
       status("Prismarine renderer");
     } catch {
       status("Prismarine renderer unavailable");

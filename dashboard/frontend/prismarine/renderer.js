@@ -142,6 +142,8 @@
         matrix.makeTranslation(p[0], p[1], p[2]);
         mesh.setMatrixAt(i, matrix);
       });
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.frustumCulled = false;
       next.add(mesh);
     }
     scene.remove(worldGroup);
