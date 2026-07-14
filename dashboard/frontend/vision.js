@@ -80,13 +80,24 @@ const Vision = (() => {
   }
 
   function showCustomCanvas() {
-    if (canvas) canvas.hidden = false;
-    if (prismarineFrame) prismarineFrame.hidden = true;
+    if (canvas) {
+      canvas.hidden = false;
+      canvas.style.display = "block";
+    }
+    if (prismarineFrame) {
+      prismarineFrame.hidden = true;
+      prismarineFrame.style.display = "none";
+    }
   }
 
   function showPrismarineFrame() {
-    if (canvas) canvas.hidden = true;
-    ensurePrismarineFrame().hidden = false;
+    if (canvas) {
+      canvas.hidden = true;
+      canvas.style.display = "none";
+    }
+    const frame = ensurePrismarineFrame();
+    frame.hidden = false;
+    frame.style.display = "block";
   }
 
   // -- GL setup --------------------------------------------------------------
@@ -670,8 +681,12 @@ const Vision = (() => {
       if (prismarineFrame) {
         prismarineFrame.removeAttribute("src");
         prismarineFrame.hidden = true;
+        prismarineFrame.style.display = "none";
       }
-      if (canvas) canvas.hidden = false;
+      if (canvas) {
+        canvas.hidden = false;
+        canvas.style.display = "block";
+      }
       status("disabled");
     },
     setRange(r) {

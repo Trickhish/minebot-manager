@@ -282,6 +282,10 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
   border: 0;
   background: #0a0d11;
 }
+#vision-canvas[hidden],
+#vision-prismarine[hidden] {
+  display: none;
+}
 .vision-modal-box { width: 96vw; height: 94vh; }
 .vision-stage { flex: 1; min-height: 0; background: #0a0d11; display: flex; }
 
