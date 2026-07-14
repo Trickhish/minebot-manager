@@ -32,6 +32,18 @@ const Vision = (() => {
     [[0.4375, 0, 0.4375], [0.5625, 0, 0.5625], [0.5625, 0.875, 0.5625], [0.4375, 0.875, 0.4375]],
     [[0.5625, 0, 0.4375], [0.4375, 0, 0.5625], [0.4375, 0.875, 0.5625], [0.5625, 0.875, 0.4375]],
   ];
+  const PART_COLORS = {
+    water: [0.25, 0.47, 0.9],
+    lava: [1.0, 0.38, 0.08],
+    torchWood: [0.58, 0.34, 0.13],
+    torchFlame: [1.0, 0.78, 0.24],
+    redstoneFlame: [1.0, 0.12, 0.08],
+    soulFlame: [0.35, 0.82, 1.0],
+    chestLatch: [0.85, 0.73, 0.36],
+    hopperDark: [0.2, 0.22, 0.24],
+    hopperLight: [0.39, 0.42, 0.45],
+    signText: [0.17, 0.1, 0.04],
+  };
   const PLANT_NAMES = new Set([
     "grass", "short_grass", "tall_grass", "fern", "large_fern", "dead_bush",
     "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet",
@@ -232,10 +244,16 @@ const Vision = (() => {
   function rotateShapeY(shape, turns) {
     turns = ((turns % 4) + 4) % 4;
     if (turns === 0) return shape;
+    const rotateBoxPart = (part) => Array.isArray(part)
+      ? rotateBoxY(part, turns)
+      : { ...part, box: rotateBoxY(part.box, turns) };
+    const rotatePlanePart = (part) => Array.isArray(part?.[0])
+      ? part.map(c => rotateCornerY(c, turns))
+      : { ...part, plane: part.plane.map(c => rotateCornerY(c, turns)) };
     return {
       opaque: shape.opaque,
-      boxes: (shape.boxes || []).map(box => rotateBoxY(box, turns)),
-      planes: (shape.planes || []).map(plane => plane.map(c => rotateCornerY(c, turns))),
+      boxes: (shape.boxes || []).map(rotateBoxPart),
+      planes: (shape.planes || []).map(rotatePlanePart),
     };
   }
 
@@ -257,7 +275,8 @@ const Vision = (() => {
 
   function shapeFor(name, stateOffset = -1) {
     if (!name) return { opaque: true, boxes: FULL_CUBE };
-    if (name === "water" || name === "lava") return { opaque: false, boxes: [[[0, 0, 0], [1, 0.875, 1]]] };
+    if (name === "water") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], color: PART_COLORS.water, shade: 1 }] };
+    if (name === "lava") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], color: PART_COLORS.lava, shade: 1 }] };
     if (name.endsWith("_slab")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.5, 1]]] };
     if (name.endsWith("_stairs")) return {
       opaque: false,
@@ -320,17 +339,20 @@ const Vision = (() => {
     };
     if (name === "torch" || (name.endsWith("_torch") && !name.endsWith("_wall_torch"))) return {
       opaque: false,
-      planes: TORCH_PLANES,
+      boxes: [
+        { box: [[0.4375, 0, 0.4375], [0.5625, 0.72, 0.5625]], color: PART_COLORS.torchWood },
+        { box: [[0.36, 0.68, 0.36], [0.64, 0.92, 0.64]], color: name.includes("soul") ? PART_COLORS.soulFlame : name.includes("redstone") ? PART_COLORS.redstoneFlame : PART_COLORS.torchFlame, shade: 1 },
+      ],
     };
     if (name.endsWith("_wall_torch")) return {
       ...rotateShapeY({
         opaque: false,
         boxes: [
-          [[0.375, 0.625, 0], [0.625, 0.875, 0.25]],
+          { box: [[0.36, 0.62, 0.02], [0.64, 0.88, 0.28]], color: name.includes("soul") ? PART_COLORS.soulFlame : name.includes("redstone") ? PART_COLORS.redstoneFlame : PART_COLORS.torchFlame, shade: 1 },
         ],
         planes: [
-          [[0.4375, 0.0625, 0], [0.5625, 0.0625, 0.25], [0.5625, 0.8125, 0.375], [0.4375, 0.8125, 0.125]],
-          [[0.5625, 0.0625, 0], [0.4375, 0.0625, 0.25], [0.4375, 0.8125, 0.375], [0.5625, 0.8125, 0.125]],
+          { plane: [[0.43, 0.08, 0.02], [0.57, 0.08, 0.16], [0.57, 0.72, 0.42], [0.43, 0.72, 0.28]], color: PART_COLORS.torchWood },
+          { plane: [[0.57, 0.08, 0.02], [0.43, 0.08, 0.16], [0.43, 0.72, 0.42], [0.57, 0.72, 0.28]], color: PART_COLORS.torchWood },
         ],
       }, turnsForFacing(facing4(stateOffset))),
     };
@@ -361,7 +383,7 @@ const Vision = (() => {
         opaque: false,
         boxes: [
           [[0.0625, 0, 0.0625], [0.9375, 0.875, 0.9375]],
-          [[0.4375, 0.375, 0], [0.5625, 0.625, 0.0625]],
+          { box: [[0.4375, 0.375, 0], [0.5625, 0.625, 0.0625]], color: PART_COLORS.chestLatch, shade: 1 },
         ],
       }, turnsForFacing(facing4(stateOffset, false, 6))),
     };
@@ -369,15 +391,15 @@ const Vision = (() => {
       const dirs = ["down", "north", "south", "west", "east"];
       const facing = dirs[stateOffset >= 0 ? stateOffset % 5 : 0] || "down";
       const sideSpout = facing === "down" ? [] : rotateShapeY({
-        boxes: [[[0.375, 0.125, 0], [0.625, 0.375, 0.375]]],
+        boxes: [{ box: [[0.375, 0.125, 0], [0.625, 0.375, 0.375]], color: PART_COLORS.hopperDark }],
       }, turnsForFacing(facing)).boxes;
       return {
         opaque: false,
         boxes: [
-          [[0.0625, 0.625, 0.0625], [0.9375, 1, 0.9375]],
-          [[0.1875, 0.375, 0.1875], [0.8125, 0.625, 0.8125]],
-          [[0.3125, 0.25, 0.3125], [0.6875, 0.375, 0.6875]],
-          ...(facing === "down" ? [[[0.375, 0, 0.375], [0.625, 0.25, 0.625]]] : sideSpout),
+          { box: [[0.0625, 0.625, 0.0625], [0.9375, 1, 0.9375]], color: PART_COLORS.hopperLight },
+          { box: [[0.1875, 0.375, 0.1875], [0.8125, 0.625, 0.8125]], color: PART_COLORS.hopperDark },
+          { box: [[0.3125, 0.25, 0.3125], [0.6875, 0.375, 0.6875]], color: PART_COLORS.hopperDark },
+          ...(facing === "down" ? [{ box: [[0.375, 0, 0.375], [0.625, 0.25, 0.625]], color: PART_COLORS.hopperDark }] : sideSpout),
         ],
       };
     }
@@ -399,11 +421,24 @@ const Vision = (() => {
         [[0.25, 0.1875, 0.25], [0.75, 0.5, 0.75]],
       ],
     };
+    if (name.endsWith("_wall_hanging_sign")) return {
+      ...rotateShapeY({
+        opaque: false,
+        boxes: [
+          [[0.125, 0.3125, 0], [0.875, 0.8125, 0.0625]],
+          [[0.25, 0.8125, 0.015], [0.3125, 1, 0.0775]],
+          [[0.6875, 0.8125, 0.015], [0.75, 1, 0.0775]],
+          { box: [[0.2, 0.52, 0.065], [0.8, 0.57, 0.085]], color: PART_COLORS.signText, shade: 1 },
+        ],
+      }, turnsForFacing(facing4(stateOffset, true))),
+    };
     if (name.endsWith("_wall_sign")) return {
       ...rotateShapeY({
         opaque: false,
-        boxes: [[[0.0625, 0.25, 0], [0.9375, 0.75, 0.0625]]],
-        planes: [[[0.0625, 0.25, 0.065], [0.9375, 0.25, 0.065], [0.9375, 0.75, 0.065], [0.0625, 0.75, 0.065]]],
+        boxes: [
+          [[0.0625, 0.25, 0], [0.9375, 0.75, 0.0625]],
+          { box: [[0.2, 0.46, 0.065], [0.8, 0.51, 0.085]], color: PART_COLORS.signText, shade: 1 },
+        ],
       }, turnsForFacing(facing4(stateOffset, true))),
     };
     if (name.endsWith("_sign") || name.endsWith("_hanging_sign")) return {
@@ -412,8 +447,8 @@ const Vision = (() => {
         boxes: [
           [[0.46875, 0, 0.46875], [0.53125, 0.5625, 0.53125]],
           [[0.0625, 0.375, 0.4375], [0.9375, 0.8125, 0.5625]],
+          { box: [[0.2, 0.58, 0.565], [0.8, 0.63, 0.585]], color: PART_COLORS.signText, shade: 1 },
         ],
-        planes: [[[0.0625, 0.375, 0.565], [0.9375, 0.375, 0.565], [0.9375, 0.8125, 0.565], [0.0625, 0.8125, 0.565]]],
       }, signTurns(stateOffset)),
     };
     if (name === "flower_pot" || name.startsWith("potted_")) return {
@@ -460,17 +495,17 @@ const Vision = (() => {
     return tile >= 0 ? tileUV(tile) : null;
   }
 
-  function emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured) {
+  function emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured, shadeOverride = null) {
     const uv = faceTileUV(entry, faceName, textured);
     const tex = uv ? 1 : 0;
-    const shade = FACE_SHADE[faceName] || 0.8;
+    const shade = shadeOverride == null ? (FACE_SHADE[faceName] || 0.8) : shadeOverride;
     for (const k of TRI) {
       const t = uv ? uv[k] : [0, 0];
       addVertex(data, wx, wy, wz, corners[k], color, t, shade, tex);
     }
   }
 
-  function emitBox(data, wx, wy, wz, min, max, entry, color, textured, occlude) {
+  function emitBox(data, wx, wy, wz, min, max, entry, color, textured, occlude, shadeOverride = null) {
     const boxFaces = [
       ["top", [[min[0], max[1], min[2]], [min[0], max[1], max[2]], [max[0], max[1], max[2]], [max[0], max[1], min[2]]], [0, 1, 0]],
       ["bottom", [[min[0], min[1], max[2]], [min[0], min[1], min[2]], [max[0], min[1], min[2]], [max[0], min[1], max[2]]], [0, -1, 0]],
@@ -481,13 +516,21 @@ const Vision = (() => {
     ];
     for (const [faceName, corners, d] of boxFaces) {
       if (occlude && occlude(d)) continue;
-      emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured);
+      emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured, shadeOverride);
     }
   }
 
-  function emitPlane(data, wx, wy, wz, corners, entry, color, textured) {
-    emitFace(data, wx, wy, wz, corners, entry, color, "south", textured);
-    emitFace(data, wx, wy, wz, [corners[3], corners[2], corners[1], corners[0]], entry, color, "north", textured);
+  function emitPlane(data, wx, wy, wz, corners, entry, color, textured, shadeOverride = null) {
+    emitFace(data, wx, wy, wz, corners, entry, color, "south", textured, shadeOverride);
+    emitFace(data, wx, wy, wz, [corners[3], corners[2], corners[1], corners[0]], entry, color, "north", textured, shadeOverride);
+  }
+
+  function partBox(part) {
+    return Array.isArray(part) ? { box: part } : part;
+  }
+
+  function partPlane(part) {
+    return Array.isArray(part?.[0]) ? { plane: part } : part;
   }
 
   function buildMesh(payload) {
@@ -526,10 +569,16 @@ const Vision = (() => {
             }
             continue;
           }
-          for (const box of shape.boxes || [])
-            emitBox(data, wx, wy, wz, box[0], box[1], meta.entry, meta.color, textured, null);
-          for (const plane of shape.planes || [])
-            emitPlane(data, wx, wy, wz, plane, meta.entry, meta.color, textured);
+          for (const rawBox of shape.boxes || []) {
+            const part = partBox(rawBox);
+            emitBox(data, wx, wy, wz, part.box[0], part.box[1], meta.entry,
+              part.color || meta.color, part.color ? false : textured, null, part.shade);
+          }
+          for (const rawPlane of shape.planes || []) {
+            const part = partPlane(rawPlane);
+            emitPlane(data, wx, wy, wz, part.plane, meta.entry,
+              part.color || meta.color, part.color ? false : textured, part.shade);
+          }
         }
 
     const arr = new Float32Array(data);
