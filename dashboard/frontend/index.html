@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260714-hide-renderer-frame">
+  <link rel="stylesheet" href="style.css?v=20260714-inventory-modal">
 </head>
 <body>
   <header>
@@ -80,6 +80,7 @@
             <span class="vlabel">✦ XP</span>
             <span class="vtxt" id="v-xp">Lvl 0</span>
           </span>
+          <button id="inventory-open" class="mini inv-open" title="Open inventory">Inventory</button>
           <span class="effects" id="effects"></span>
         </div>
 
@@ -127,13 +128,6 @@
               <div class="vision-view">
                 <canvas id="vision-canvas" width="480" height="300"></canvas>
                 <div class="map-status" id="vision-status">disabled</div>
-              </div>
-            </div>
-
-            <div class="inv-panel">
-              <div class="inv-title">Inventory</div>
-              <div class="inv-grid" id="inv-grid">
-                <div class="muted inv-empty">no inventory data yet</div>
               </div>
             </div>
           </div>
@@ -217,7 +211,21 @@
     </div>
   </div>
 
+  <div class="modal" id="inventory-modal" hidden>
+    <div class="modal-box inventory-modal-box">
+      <div class="modal-head">
+        <h2>Inventory</h2>
+        <button class="modal-close" id="inventory-modal-close">✕</button>
+      </div>
+      <div class="inventory-modal-body">
+        <div class="inv-grid" id="inv-grid">
+          <div class="muted inv-empty">no inventory data yet</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="vision.js?v=20260714-custom-shape-parts"></script>
-  <script src="app.js?v=20260714-refresh-modes"></script>
+  <script src="app.js?v=20260714-inventory-modal"></script>
 </body>
 </html>

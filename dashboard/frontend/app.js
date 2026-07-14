@@ -77,7 +77,7 @@ function selectBot(id) {
   $("#detail-body").hidden = !id;
   $("#detail-error").textContent = "";
   resetPanels();
-  if (!id) { closeVisionModal(); return; }
+  if (!id) { closeVisionModal(); closeInventoryModal(); return; }
   $("#log").innerHTML = "";
   openSocket(id);
   startMap();
@@ -465,6 +465,21 @@ $("#vision-modal").addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeVisionModal();
+});
+
+function openInventoryModal() {
+  $("#inventory-modal").hidden = false;
+}
+function closeInventoryModal() {
+  $("#inventory-modal").hidden = true;
+}
+$("#inventory-open").addEventListener("click", openInventoryModal);
+$("#inventory-modal-close").addEventListener("click", closeInventoryModal);
+$("#inventory-modal").addEventListener("click", (e) => {
+  if (e.target.id === "inventory-modal") closeInventoryModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeInventoryModal();
 });
 
 // -- macros -----------------------------------------------------------------
