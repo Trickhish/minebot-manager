@@ -138,7 +138,10 @@ async def ws_proxy(websocket: WebSocket, bot_id: str):
 # -- static frontend (mounted last so /api/* wins) --------------------------
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    return FileResponse(
+        os.path.join(FRONTEND_DIR, "index.html"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
