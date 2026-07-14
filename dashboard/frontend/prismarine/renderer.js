@@ -2,8 +2,8 @@
   const params = new URLSearchParams(window.location.search);
   const botId = params.get("bot");
   const range = Number(params.get("range") || "40");
+  const refreshMs = Math.max(1000, Number(params.get("refresh") || "30000"));
   const statusEl = document.getElementById("status");
-  const REFRESH_MS = 1800;
   const POSE_MS = 150;
   const PLAYER_HEIGHT = 1.62;
   const NON_CUBE = /torch|sign|hopper|chest|water|lava|ladder|rail|vine|candle|chain|rod/;
@@ -201,7 +201,7 @@
     document.body.appendChild(renderer.domElement);
     window.addEventListener("resize", resize);
     refreshWorld();
-    setInterval(refreshWorld, REFRESH_MS);
+    setInterval(refreshWorld, refreshMs);
     setInterval(refreshPose, POSE_MS);
     animate();
   }

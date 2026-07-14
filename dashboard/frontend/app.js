@@ -25,6 +25,8 @@ const api = {
 };
 
 const state = { bots: [], selected: null, ws: null, mapTimer: null, mapUrl: null, mapBusy: false };
+const VISION_SMALL_REFRESH_MS = 30000;
+const VISION_FULL_REFRESH_MS = 1800;
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -79,7 +81,8 @@ function selectBot(id) {
   $("#log").innerHTML = "";
   openSocket(id);
   startMap();
-  if ($("#vision-on").checked) Vision.attach(id, Number($("#vision-range").value));
+  Vision.setRefreshInterval(VISION_SMALL_REFRESH_MS);
+  Vision.attach(id, Number($("#vision-range").value));
   loadState(id);
   loadMacroBar(id);
 }
@@ -431,14 +434,8 @@ $("#map-live").addEventListener("change", (e) => {
   if (e.target.checked && state.selected) tickMap();
 });
 
-$("#vision-on").addEventListener("change", (e) => {
-  if (e.target.checked && state.selected)
-    Vision.attach(state.selected, Number($("#vision-range").value));
-  else
-    Vision.detach();
-});
 $("#vision-range").addEventListener("change", (e) => {
-  if (Vision.isOn()) Vision.setRange(Number(e.target.value));
+  if (state.selected) Vision.setRange(Number(e.target.value));
 });
 $("#vision-renderer").value = Vision.renderer();
 $("#vision-renderer").addEventListener("change", (e) => {
@@ -449,10 +446,7 @@ $("#vision-renderer").addEventListener("change", (e) => {
 // so the WebGL context is reused rather than recreated.
 function openVisionModal() {
   if (!state.selected) return;
-  if (!$("#vision-on").checked) {           // auto-enable so there's something to see
-    $("#vision-on").checked = true;
-    $("#vision-on").dispatchEvent(new Event("change"));
-  }
+  Vision.setRefreshInterval(VISION_FULL_REFRESH_MS);
   $("#vision-stage").appendChild(Vision.element());
   $("#vision-modal").hidden = false;
   requestAnimationFrame(() => Vision.resize());
@@ -461,6 +455,7 @@ function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
   $("#vision-modal").hidden = true;
   $(".vision-view").insertBefore(Vision.element(), $("#vision-status"));
+  Vision.setRefreshInterval(VISION_SMALL_REFRESH_MS);
   requestAnimationFrame(() => Vision.resize());
 }
 $("#vision-expand").addEventListener("click", openVisionModal);

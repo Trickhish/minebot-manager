@@ -9,7 +9,7 @@
 
 const Vision = (() => {
   const FOG_COLOR = [0.53, 0.68, 0.92];   // sky-ish; also the clear color
-  const GEOM_REFRESH_MS = 1800;
+  const DEFAULT_GEOM_REFRESH_MS = 30000;
   const FACE_SHADE = { top: 1.0, bottom: 0.5, north: 0.8, south: 0.8, east: 0.62, west: 0.62 };
 
   // Unit-cube faces: [name, 4 corner offsets (ccw from outside), neighbor delta].
@@ -47,6 +47,7 @@ const Vision = (() => {
   let prismarineFrame = null;
   let vbo, vertexCount = 0;
   let botId = null, range = 40;
+  let refreshMs = DEFAULT_GEOM_REFRESH_MS;
   let pose = null;
   let geomTimer = null, rafHandle = null, fetching = false;
   let rendererMode = localStorage.getItem("visionRenderer") || "custom";
@@ -562,7 +563,7 @@ const Vision = (() => {
         return;
       }
       const frame = ensurePrismarineFrame();
-      frame.src = `prismarine/index.html?v=20260714-alt-renderer&bot=${encodeURIComponent(id)}&range=${encodeURIComponent(range)}`;
+      frame.src = `prismarine/index.html?v=20260714-refresh-modes&bot=${encodeURIComponent(id)}&range=${encodeURIComponent(range)}&refresh=${encodeURIComponent(refreshMs)}`;
       status("Prismarine renderer");
     } catch {
       status("Prismarine renderer unavailable");
@@ -657,7 +658,7 @@ const Vision = (() => {
         if (botId !== id) return;
         refreshGeometry();
         clearInterval(geomTimer);
-        geomTimer = setInterval(refreshGeometry, GEOM_REFRESH_MS);
+        geomTimer = setInterval(refreshGeometry, refreshMs);
       });
       if (!rafHandle) frame();
     },
@@ -678,6 +679,17 @@ const Vision = (() => {
       if (!botId) return;
       if (rendererMode === "prismarine") attachPrismarine(botId, range);
       else refreshGeometry();
+    },
+    setRefreshInterval(ms) {
+      refreshMs = Math.max(1000, Number(ms) || DEFAULT_GEOM_REFRESH_MS);
+      if (!botId) return;
+      if (rendererMode === "prismarine") {
+        attachPrismarine(botId, range);
+        return;
+      }
+      clearInterval(geomTimer);
+      geomTimer = setInterval(refreshGeometry, refreshMs);
+      refreshGeometry();
     },
     resize() { syncSize(); },
     setPose(p) {
