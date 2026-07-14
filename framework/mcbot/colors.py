@@ -67,6 +67,13 @@ _BLOCK_COLORS: dict[str, tuple[int, int, int]] = {
     "redstone_torch": (176, 54, 43), "redstone_wall_torch": (176, 54, 43),
     "chest": (126, 82, 35), "trapped_chest": (134, 80, 38),
     "ender_chest": (45, 70, 78), "hopper": (76, 78, 82),
+    "ladder": (139, 104, 58), "rail": (135, 119, 96), "powered_rail": (181, 143, 68),
+    "detector_rail": (155, 116, 87), "activator_rail": (157, 122, 91),
+    "chain": (78, 78, 82), "iron_chain": (78, 78, 82),
+    "end_rod": (220, 209, 188), "cauldron": (75, 78, 82),
+    "water_cauldron": (75, 78, 82), "lava_cauldron": (75, 78, 82),
+    "powder_snow_cauldron": (75, 78, 82), "campfire": (117, 74, 42),
+    "soul_campfire": (83, 86, 76), "candle": (221, 214, 190),
 }
 
 

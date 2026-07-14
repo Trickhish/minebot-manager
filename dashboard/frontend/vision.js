@@ -167,8 +167,26 @@ const Vision = (() => {
 
   function shapeFor(name) {
     if (!name) return { opaque: true, boxes: FULL_CUBE };
+    if (name === "water" || name === "lava") return { opaque: false, boxes: [[[0, 0, 0], [1, 0.875, 1]]] };
     if (name.endsWith("_slab")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.5, 1]]] };
+    if (name.endsWith("_stairs")) return {
+      opaque: false,
+      boxes: [
+        [[0, 0, 0], [1, 0.5, 1]],
+        [[0, 0.5, 0.5], [1, 1, 1]],
+      ],
+    };
     if (name.endsWith("_carpet")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.0625, 1]]] };
+    if (name.endsWith("_bed")) return {
+      opaque: false,
+      boxes: [
+        [[0, 0.1875, 0], [1, 0.5625, 1]],
+        [[0.0625, 0, 0.0625], [0.1875, 0.1875, 0.1875]],
+        [[0.8125, 0, 0.0625], [0.9375, 0.1875, 0.1875]],
+        [[0.0625, 0, 0.8125], [0.1875, 0.1875, 0.9375]],
+        [[0.8125, 0, 0.8125], [0.9375, 0.1875, 0.9375]],
+      ],
+    };
     if (name.endsWith("_pane") || name.endsWith("_bars")) return {
       opaque: false,
       boxes: [
@@ -188,8 +206,28 @@ const Vision = (() => {
       opaque: false,
       boxes: [[[0, 0, 0], [1, name.endsWith("_trapdoor") ? 0.1875 : 1, 0.1875]]],
     };
+    if (name === "ladder" || name === "vine" || name.endsWith("_wall_fan")) return {
+      opaque: false,
+      planes: [
+        [[0, 0, 0.03125], [1, 0, 0.03125], [1, 1, 0.03125], [0, 1, 0.03125]],
+        [[0.96875, 0, 0], [0.96875, 0, 1], [0.96875, 1, 1], [0.96875, 1, 0]],
+      ],
+    };
+    if (name.endsWith("_rail") || name === "rail") return {
+      opaque: false,
+      planes: [
+        [[0, 0.03125, 0], [1, 0.03125, 0], [1, 0.03125, 1], [0, 0.03125, 1]],
+      ],
+    };
     if (name.endsWith("_button")) return { opaque: false, boxes: [[[0.3125, 0.375, 0], [0.6875, 0.625, 0.125]]] };
     if (name.endsWith("_pressure_plate")) return { opaque: false, boxes: [[[0.0625, 0, 0.0625], [0.9375, 0.0625, 0.9375]]] };
+    if (name.endsWith("_candle") || name === "candle") return {
+      opaque: false,
+      boxes: [
+        [[0.375, 0, 0.375], [0.5625, 0.4375, 0.5625]],
+        [[0.4375, 0.4375, 0.4375], [0.5, 0.625, 0.5]],
+      ],
+    };
     if (name === "torch" || (name.endsWith("_torch") && !name.endsWith("_wall_torch"))) return {
       opaque: false,
       planes: TORCH_PLANES,
@@ -209,6 +247,20 @@ const Vision = (() => {
         [[0.375, 0.625, 0.375], [0.625, 0.875, 0.625]],
       ],
     };
+    if (name === "chain" || name.endsWith("_chain")) return {
+      opaque: false,
+      boxes: [
+        [[0.4375, 0, 0.4375], [0.5625, 1, 0.5625]],
+        [[0.3125, 0.375, 0.4375], [0.6875, 0.625, 0.5625]],
+      ],
+    };
+    if (name === "end_rod" || name.endsWith("_rod")) return {
+      opaque: false,
+      boxes: [
+        [[0.4375, 0, 0.4375], [0.5625, 0.875, 0.5625]],
+        [[0.3125, 0, 0.3125], [0.6875, 0.125, 0.6875]],
+      ],
+    };
     if (name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest")) return {
       opaque: false,
       boxes: [
@@ -219,9 +271,28 @@ const Vision = (() => {
     if (name === "hopper") return {
       opaque: false,
       boxes: [
-        [[0.125, 0.625, 0.125], [0.875, 1, 0.875]],
-        [[0.25, 0.25, 0.25], [0.75, 0.625, 0.75]],
+        [[0.0625, 0.625, 0.0625], [0.9375, 1, 0.9375]],
+        [[0.1875, 0.375, 0.1875], [0.8125, 0.625, 0.8125]],
         [[0.375, 0, 0.375], [0.625, 0.25, 0.625]],
+        [[0.3125, 0.25, 0.3125], [0.6875, 0.375, 0.6875]],
+      ],
+    };
+    if (name === "cauldron" || name.endsWith("_cauldron")) return {
+      opaque: false,
+      boxes: [
+        [[0.125, 0, 0.125], [0.875, 0.3125, 0.875]],
+        [[0.0625, 0.3125, 0.0625], [0.1875, 1, 0.9375]],
+        [[0.8125, 0.3125, 0.0625], [0.9375, 1, 0.9375]],
+        [[0.1875, 0.3125, 0.0625], [0.8125, 1, 0.1875]],
+        [[0.1875, 0.3125, 0.8125], [0.8125, 1, 0.9375]],
+      ],
+    };
+    if (name === "campfire" || name === "soul_campfire") return {
+      opaque: false,
+      boxes: [
+        [[0.125, 0, 0.25], [0.875, 0.1875, 0.375]],
+        [[0.125, 0, 0.625], [0.875, 0.1875, 0.75]],
+        [[0.25, 0.1875, 0.25], [0.75, 0.5, 0.75]],
       ],
     };
     if (name.endsWith("_wall_sign")) return {
