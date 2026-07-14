@@ -297,7 +297,7 @@ const Vision = (() => {
     } else {
       boxes = [slab, [[0, y0, 0.5], [1, y1, 1]]];
     }
-    return rotateShapeY({ opaque: false, boxes }, turnsForFacing(facing));
+    return rotateShapeY({ opaque: false, boxes }, turnsForFacing(facing) + 2);
   }
 
   function shapeFor(name, stateOffset = -1) {
@@ -375,7 +375,7 @@ const Vision = (() => {
           { plane: [[0.43, 0.08, 0.02], [0.57, 0.08, 0.16], [0.57, 0.72, 0.42], [0.43, 0.72, 0.28]], color: PART_COLORS.torchWood },
           { plane: [[0.57, 0.08, 0.02], [0.43, 0.08, 0.16], [0.43, 0.72, 0.42], [0.57, 0.72, 0.28]], color: PART_COLORS.torchWood },
         ],
-      }, turnsForFacing(wallTorchFacing(name, stateOffset))),
+      }, turnsForFacing(wallTorchFacing(name, stateOffset)) + 2),
     };
     if (name === "lantern" || name === "soul_lantern" || name.endsWith("_copper_lantern")) return {
       opaque: false,
