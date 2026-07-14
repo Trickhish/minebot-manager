@@ -28,6 +28,10 @@ const Vision = (() => {
     [[0.15, 0, 0.15], [0.85, 0, 0.85], [0.85, 1, 0.85], [0.15, 1, 0.15]],
     [[0.85, 0, 0.15], [0.15, 0, 0.85], [0.15, 1, 0.85], [0.85, 1, 0.15]],
   ];
+  const TORCH_PLANES = [
+    [[0.4375, 0, 0.4375], [0.5625, 0, 0.5625], [0.5625, 0.875, 0.5625], [0.4375, 0.875, 0.4375]],
+    [[0.5625, 0, 0.4375], [0.4375, 0, 0.5625], [0.4375, 0.875, 0.5625], [0.5625, 0.875, 0.4375]],
+  ];
   const PLANT_NAMES = new Set([
     "grass", "short_grass", "tall_grass", "fern", "large_fern", "dead_bush",
     "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet",
@@ -144,7 +148,7 @@ const Vision = (() => {
   // -- geometry --------------------------------------------------------------
   function entryName(entry) {
     const last = entry[entry.length - 1];
-    return typeof last === "string" ? last : "";
+    return typeof last === "string" ? last.replace(/^minecraft:/, "") : "";
   }
 
   function entryTile(entry, faceName, textured) {
@@ -180,15 +184,18 @@ const Vision = (() => {
     if (name === "torch" || name === "soul_torch" || name === "redstone_torch") return {
       opaque: false,
       boxes: [
-        [[0.4375, 0, 0.4375], [0.5625, 0.625, 0.5625]],
-        [[0.375, 0.625, 0.375], [0.625, 0.875, 0.625]],
+        [[0.375, 0.6875, 0.375], [0.625, 0.9375, 0.625]],
       ],
+      planes: TORCH_PLANES,
     };
     if (name.endsWith("_wall_torch")) return {
       opaque: false,
       boxes: [
-        [[0.4375, 0.1875, 0], [0.5625, 0.6875, 0.25]],
-        [[0.375, 0.625, 0], [0.625, 0.875, 0.25]],
+        [[0.375, 0.5625, 0], [0.625, 0.8125, 0.25]],
+      ],
+      planes: [
+        [[0.4375, 0.125, 0], [0.5625, 0.125, 0.25], [0.5625, 0.8125, 0.25], [0.4375, 0.8125, 0]],
+        [[0.5625, 0.125, 0], [0.4375, 0.125, 0.25], [0.4375, 0.8125, 0.25], [0.5625, 0.8125, 0]],
       ],
     };
     if (name === "lantern" || name === "soul_lantern" || name.endsWith("_copper_lantern")) return {
@@ -213,6 +220,19 @@ const Vision = (() => {
         [[0.25, 0.25, 0.25], [0.75, 0.625, 0.75]],
         [[0.375, 0, 0.375], [0.625, 0.25, 0.625]],
       ],
+    };
+    if (name.endsWith("_wall_sign")) return {
+      opaque: false,
+      boxes: [[[0.0625, 0.25, 0], [0.9375, 0.75, 0.0625]]],
+      planes: [[[0.0625, 0.25, 0.065], [0.9375, 0.25, 0.065], [0.9375, 0.75, 0.065], [0.0625, 0.75, 0.065]]],
+    };
+    if (name.endsWith("_sign") || name.endsWith("_hanging_sign")) return {
+      opaque: false,
+      boxes: [
+        [[0.46875, 0, 0.46875], [0.53125, 0.625, 0.53125]],
+        [[0.0625, 0.5, 0.4375], [0.9375, 0.9375, 0.5625]],
+      ],
+      planes: [[[0.0625, 0.5, 0.565], [0.9375, 0.5, 0.565], [0.9375, 0.9375, 0.565], [0.0625, 0.9375, 0.565]]],
     };
     if (name === "flower_pot" || name.startsWith("potted_")) return {
       opaque: false,
