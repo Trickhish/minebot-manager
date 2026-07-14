@@ -38,6 +38,10 @@ framework/tools/_viaversion_cache/
 # it local; each user supplies a pack they own. Remove this line to commit it.
 framework/default_rpack.zip
 
+# -- ad-hoc debug screenshots dropped in the repo root ------------------------
+/real_view.png
+/rendered_view.png
+
 # -- editor / OS --------------------------------------------------------------
 .DS_Store
 .idea/

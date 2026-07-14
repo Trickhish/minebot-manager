@@ -15,11 +15,12 @@ import os
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "pc")
 
-# Versions without their own vendored table borrow the nearest one. New block
-# types added after the borrowed version's release will resolve as "unknown".
-_FALLBACK = {
-    "26.2": "1.21.11",
-}
+# Versions without their own vendored table borrow the nearest one. That's a
+# poor substitute: new blocks resolve as "unknown" and, worse, existing state
+# ids get renumbered -> wrong names. So prefer a version-exact table. 26.2's is
+# built from the server jar's data reports (tools/build_block_table_from_reports.py)
+# since minecraft-data has no 26.x block registry.
+_FALLBACK: dict[str, str] = {}
 
 AIR_NAMES = frozenset({"air", "cave_air", "void_air"})
 
