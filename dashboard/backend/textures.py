@@ -20,10 +20,43 @@ import json
 import math
 import os
 
-from mcbot.resourcepack import ResourcePack, _SPECIAL_NAMES, _STRIP_SUFFIXES
+from mcbot.resourcepack import ResourcePack, _SPECIAL_NAMES
 from mcbot.png import decode_png, encode_png
 
 TILE = 16
+
+# "Shape" blocks share their material's texture (a slab/stairs/fence of oak
+# uses oak_planks, a cobblestone_wall uses cobblestone, ...). Strip one of these
+# to recover the material name, then resolve the material to a real texture stem.
+_SHAPE_SUFFIXES = (
+    "_slab", "_stairs", "_wall_hanging_sign", "_hanging_sign", "_wall_sign",
+    "_sign", "_wall", "_fence_gate", "_fence", "_pressure_plate", "_button",
+    "_trapdoor", "_door", "_carpet", "_pane",
+)
+
+
+# Prefixes that don't change a block's texture (waxed copper = copper texture,
+# infested stone = stone texture): strip and resolve the remainder.
+_TRANSPARENT_PREFIXES = ("waxed_", "infested_")
+
+
+def _material_variants(m: str):
+    """Texture-stem guesses for a material name, most specific first. Covers the
+    common naming gaps: wood -> planks, _wood -> _log, _hyphae -> _stem,
+    <color>_carpet -> <color>_wool, brick -> bricks (plural), purpur -> purpur_block,
+    snow_block -> snow."""
+    yield m
+    if m.endswith("_wood"):
+        yield m[:-5] + "_log"
+    elif m.endswith("_hyphae"):
+        yield m[:-7] + "_stem"
+    if m.endswith("_block"):
+        yield m[:-6]         # snow_block -> snow, magma_block -> magma
+    if not m.endswith("_planks"):
+        yield m + "_planks"
+    yield m + "_block"       # purpur/quartz (slab/stairs) -> purpur_block/quartz_block
+    yield m + "s"            # brick -> bricks, stone_brick -> stone_bricks
+    yield m + "_wool"        # <color>_carpet material -> <color>_wool
 
 # Foliage textures are grayscale in the pack (biome-tinted in-game). Multiply
 # by a representative green so they don't come out gray.
@@ -116,27 +149,48 @@ class TextureAtlas:
         return np.clip(rgb, 0, 255).astype(np.uint8)
 
     # -- lookup -------------------------------------------------------------
+    def _stem_candidates(self, name: str):
+        """Candidate texture stems for a block, most specific first."""
+        order, seen = [], set()
+
+        def add(s):
+            if s and s not in seen:
+                seen.add(s)
+                order.append(s)
+
+        add(_SPECIAL_NAMES.get(name, name))
+        # Resolve the name and any texture-preserving-prefix-stripped form.
+        bases = [name]
+        for pfx in _TRANSPARENT_PREFIXES:
+            if name.startswith(pfx):
+                bases.append(name[len(pfx):])
+        for bn in bases:
+            for suf in _SHAPE_SUFFIXES:   # slab/stairs/fence/... -> material texture
+                if bn.endswith(suf):
+                    for v in _material_variants(bn[: -len(suf)]):
+                        add(v)
+                    break
+            for v in _material_variants(bn):   # also handles _wood/_hyphae directly
+                add(v)
+        return order
+
     def face_tiles(self, name: str):
         """(top, side, bottom) atlas tile indices for a block name; -1 where no
         texture resolves (renderer falls back to the flat color there)."""
-        base = _SPECIAL_NAMES.get(name, name)
-        strip = base
-        for suf in _STRIP_SUFFIXES:
-            if name.endswith(suf):
-                strip = name[: -len(suf)]
-                break
+        cands = self._stem_candidates(name)
 
-        def pick(cands):
+        def pick(suffixes):
             for c in cands:
-                if c in self.stem_to_tile:
-                    return self.stem_to_tile[c]
+                for suf in suffixes:
+                    tile = self.stem_to_tile.get(c + suf)
+                    if tile is not None:
+                        return tile
             return -1
 
-        top = pick([base + "_top", strip + "_top", base, strip])
-        side = pick([base + "_side", strip + "_side", base, strip])
+        top = pick(("_top", ""))
+        side = pick(("_side", ""))
         if name == "grass_block":  # bottom of grass is dirt, not the green top
-            bottom = pick(["dirt"])
+            bottom = self.stem_to_tile.get("dirt", -1)
         else:
-            bottom = pick([base + "_bottom", strip + "_bottom",
-                           base + "_top", strip + "_top", base, strip])
+            bottom = pick(("_bottom", "_top", ""))
         return top, side, bottom
