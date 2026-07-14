@@ -3,8 +3,7 @@
 Authorization-Code flow with a confidential client. Identity is resolved by
 calling the provider's userinfo endpoint with the access token, so this needs
 no JWT/JWKS crypto dependency -- only stdlib urllib. Sessions are opaque random
-ids backed by an in-memory store (single process, same as the bots), carried in
-an HttpOnly cookie.
+ids stored server-side and carried in an HttpOnly cookie.
 
 Config comes from environment (see dashboard/.env):
     OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
@@ -26,6 +25,11 @@ from fastapi.responses import JSONResponse, RedirectResponse
 SESSION_COOKIE = "minebot_session"
 _STATE_TTL = 600          # seconds an in-flight login may take
 _SESSION_TTL = 12 * 3600  # session lifetime
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+SESSION_STORE = os.environ.get(
+    "SESSION_STORE",
+    os.path.join(DATA_DIR, "sessions.json"),
+)
 
 AUTH_DISABLED = os.environ.get("AUTH_DISABLED", "0") == "1"
 ISSUER = os.environ.get("OIDC_ISSUER", "").rstrip("/") + "/"
@@ -39,10 +43,11 @@ PUBLIC_PREFIXES = ("/auth/login", "/auth/callback", "/style.css", "/favicon")
 
 router = APIRouter()
 
-# In-memory stores. Single-process, cleared on restart -- users just log in
-# again, same tradeoff as the bots being in-memory.
+# Session ids are still opaque and HttpOnly in the browser, but the backing
+# store survives dashboard restarts.
 _sessions: dict[str, dict] = {}   # sid -> {"user":..., "exp":...}
 _pending: dict[str, dict] = {}    # state -> {"nonce":..., "exp":..., "next":...}
+_sessions_loaded = False
 
 _discovery_cache: dict | None = None
 
@@ -65,12 +70,14 @@ def current_user(request: Request) -> dict | None:
     """The logged-in user for this request, or None. Honors AUTH_DISABLED."""
     if AUTH_DISABLED:
         return {"sub": "dev", "name": "dev (auth disabled)", "email": ""}
+    _load_sessions()
     sid = request.cookies.get(SESSION_COOKIE)
     if not sid:
         return None
     sess = _sessions.get(sid)
     if not sess or sess["exp"] < time.time():
         _sessions.pop(sid, None)
+        _save_sessions()
         return None
     return sess["user"]
 
@@ -118,12 +125,14 @@ async def callback(request: Request):
 
     user = _userinfo(access_token)
     sid = _new_sid()
+    _load_sessions()
     _prune(_sessions)
     _sessions[sid] = {
         "user": {"sub": user.get("sub"), "name": user.get("name") or user.get("preferred_username"),
                  "email": user.get("email", "")},
         "exp": time.time() + _SESSION_TTL,
     }
+    _save_sessions()
     resp = RedirectResponse(pending.get("next") or "/", status_code=302)
     resp.set_cookie(SESSION_COOKIE, sid, max_age=_SESSION_TTL, httponly=True,
                     samesite="lax", secure=True, path="/")
@@ -132,9 +141,11 @@ async def callback(request: Request):
 
 @router.post("/auth/logout")
 async def logout(request: Request):
+    _load_sessions()
     sid = request.cookies.get(SESSION_COOKIE)
     if sid:
         _sessions.pop(sid, None)
+        _save_sessions()
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(SESSION_COOKIE, path="/")
     return resp
@@ -174,3 +185,33 @@ def _prune(store: dict) -> None:
     now = time.time()
     for key in [k for k, v in store.items() if v.get("exp", 0) < now]:
         store.pop(key, None)
+
+
+def _load_sessions() -> None:
+    global _sessions_loaded
+    if _sessions_loaded:
+        return
+    _sessions_loaded = True
+    try:
+        with open(SESSION_STORE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return
+    except Exception:  # noqa: BLE001 - corrupt/unreadable store should not block login
+        _sessions.clear()
+        return
+    if isinstance(data, dict):
+        _sessions.clear()
+        _sessions.update({str(k): v for k, v in data.items() if isinstance(v, dict)})
+        before = len(_sessions)
+        _prune(_sessions)
+        if len(_sessions) != before:
+            _save_sessions()
+
+
+def _save_sessions() -> None:
+    os.makedirs(os.path.dirname(SESSION_STORE), exist_ok=True)
+    tmp = f"{SESSION_STORE}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(_sessions, fh)
+    os.replace(tmp, SESSION_STORE)
