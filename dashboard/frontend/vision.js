@@ -273,6 +273,10 @@ const Vision = (() => {
     return facing4(offset, false, name.includes("redstone") ? 2 : 1);
   }
 
+  function isWallTorch(name) {
+    return name === "wall_torch" || name.endsWith("_wall_torch");
+  }
+
   function stairShape(offset) {
     const facing = facing4(offset, false, 20);
     const halfTop = offset >= 0 && (Math.floor(offset / 10) % 2) === 0;
@@ -354,14 +358,14 @@ const Vision = (() => {
         [[0.4375, 0.4375, 0.4375], [0.5, 0.625, 0.5]],
       ],
     };
-    if (name === "torch" || (name.endsWith("_torch") && !name.endsWith("_wall_torch"))) return {
+    if (name === "torch" || (name.endsWith("_torch") && !isWallTorch(name))) return {
       opaque: false,
       boxes: [
         { box: [[0.4375, 0, 0.4375], [0.5625, 0.72, 0.5625]], color: PART_COLORS.torchWood },
         { box: [[0.36, 0.68, 0.36], [0.64, 0.92, 0.64]], color: name.includes("soul") ? PART_COLORS.soulFlame : name.includes("redstone") ? PART_COLORS.redstoneFlame : PART_COLORS.torchFlame, shade: 1 },
       ],
     };
-    if (name.endsWith("_wall_torch")) return {
+    if (isWallTorch(name)) return {
       ...rotateShapeY({
         opaque: false,
         boxes: [
