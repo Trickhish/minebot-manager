@@ -152,11 +152,6 @@ const Vision = (() => {
     return faceName === "top" ? entry[3] : faceName === "bottom" ? entry[5] : entry[4];
   }
 
-  function isOpaqueCubeName(name) {
-    if (!name) return false;
-    return shapeFor(name).opaque;
-  }
-
   function shapeFor(name) {
     if (!name) return { opaque: true, boxes: FULL_CUBE };
     if (name.endsWith("_slab")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.5, 1]]] };
@@ -236,6 +231,18 @@ const Vision = (() => {
     return { opaque: true, boxes: FULL_CUBE };
   }
 
+  function paletteMeta(entry, idx) {
+    const name = entryName(entry);
+    const shape = idx === 0 ? { opaque: false } : shapeFor(name);
+    return {
+      color: [entry[0] / 255, entry[1] / 255, entry[2] / 255],
+      entry,
+      name,
+      opaque: shape.opaque === true,
+      shape,
+    };
+  }
+
   function addVertex(data, wx, wy, wz, corner, color, uv, shade, tex) {
     data.push(
       wx + corner[0], wy + corner[1], wz + corner[2],
@@ -294,6 +301,11 @@ const Vision = (() => {
     }
     const at = (x, y, z) => (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz)
       ? 0 : grid[(y * nz + z) * nx + x];
+    const opaqueAt = (x, y, z) => {
+      const idx = at(x, y, z);
+      return idx !== 0 && metas[idx].opaque;
+    };
+    const metas = pal.map(paletteMeta);
 
     const data = [];
     for (let y = 0; y < ny; y++)
@@ -301,18 +313,19 @@ const Vision = (() => {
         for (let x = 0; x < nx; x++) {
           const idx = grid[(y * nz + z) * nx + x];
           if (idx === 0) continue;
-          const entry = pal[idx];
-          const blockName = entryName(entry);
-          const shape = shapeFor(blockName);
-          const color = [entry[0] / 255, entry[1] / 255, entry[2] / 255];
+          const meta = metas[idx], shape = meta.shape;
           const wx = ox + x, wy = oy + y, wz = oz + z;
-          const occlude = shape.opaque
-            ? (d) => isOpaqueCubeName(entryName(pal[at(x + d[0], y + d[1], z + d[2])] || []))
-            : null;
+          if (shape.opaque) {
+            for (const [name, corners, d] of FACES) {
+              if (opaqueAt(x + d[0], y + d[1], z + d[2])) continue;
+              emitFace(data, wx, wy, wz, corners, meta.entry, meta.color, name, textured);
+            }
+            continue;
+          }
           for (const box of shape.boxes || [])
-            emitBox(data, wx, wy, wz, box[0], box[1], entry, color, textured, occlude);
+            emitBox(data, wx, wy, wz, box[0], box[1], meta.entry, meta.color, textured, null);
           for (const plane of shape.planes || [])
-            emitPlane(data, wx, wy, wz, plane, entry, color, textured);
+            emitPlane(data, wx, wy, wz, plane, meta.entry, meta.color, textured);
         }
 
     const arr = new Float32Array(data);
