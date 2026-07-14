@@ -1,0 +1,771 @@
+"""High-level client: the protocol state machine + an event API.
+
+Ties together `Protocol` (what packets mean) and `Connection` (how bytes move)
+and walks the login flow to reach the Play state, then pumps packets and
+dispatches them as events. Version-aware: it handles both the classic
+login->play path (<=1.20.1) and the login->configuration->play path (>=1.20.2).
+
+Only offline (unauthenticated) login is implemented. If the server is in
+online mode it will send `encryption_begin`; we surface that clearly instead of
+silently failing, since completing it needs Microsoft auth (a separate module).
+
+Usage:
+    client = Client("mc.example.com", username="Bot", version="1.18.2")
+    client.on("chat", lambda name, params, raw: print(params))
+    client.connect()   # blocks, pumping packets
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import sys
+import threading
+import time as _time
+from collections import defaultdict
+
+from .blocks import get_block_table
+from .buffer import BufferUnderrun
+from .connection import Connection
+from .inventory import Inventory, make_slot_value
+from .items import get_item_table
+from .protocol import Protocol
+from .world import World
+
+# Versions whose chunk sections predate the modern (no cross-long bit packing)
+# paletted-container format `chunk.py` parses -- world tracking is disabled
+# for these rather than silently misreading chunk bytes.
+_LEGACY_CHUNK_FORMAT_VERSIONS = {"1.8"}
+
+
+def offline_uuid(username: str) -> str:
+    """The UUID an offline-mode server derives for a username (name-based v3)."""
+    md5 = bytearray(hashlib.md5(f"OfflinePlayer:{username}".encode()).digest())
+    md5[6] = (md5[6] & 0x0F) | 0x30  # version 3
+    md5[8] = (md5[8] & 0x3F) | 0x80  # RFC 4122 variant
+    h = md5.hex()
+    return f"{h[0:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:32]}"
+
+
+_CHAT_PACKETS = ("chat", "system_chat", "player_chat", "profileless_chat")
+
+
+class OnlineModeRequired(Exception):
+    """Server demanded encryption (online mode); offline login can't continue."""
+
+
+class Disconnected(Exception):
+    """Server closed the session or sent a disconnect packet."""
+
+
+class Client:
+    def __init__(self, host, port=25565, username="Bot", version="1.18.2",
+                 advertise_protocol=None):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.protocol = Protocol(version)
+        # What protocol number to claim in the handshake. Defaults to the
+        # schema's own number, but can be bumped to talk to a server that is
+        # slightly newer than the schema we decode with.
+        self.advertise_protocol = advertise_protocol or self.protocol.protocol_version
+        self.conn = Connection(host, port)
+        self.state = "handshaking"
+        self.uuid = offline_uuid(username)
+        self.running = False
+        self._handlers: dict = defaultdict(list)
+        # Outbound packet-id overrides for talking to a server whose packet
+        # numbering drifted from our schema: {(state, name): id}. Needed when
+        # advertising a protocol newer than the vendored data.
+        self.id_overrides: dict = {}
+
+        # -- movement state ---------------------------------------------
+        self.position = {"x": 0.0, "y": 0.0, "z": 0.0,
+                          "yaw": 0.0, "pitch": 0.0, "on_ground": True}
+        self.spawned = False
+        self.walk_speed = 4.317  # blocks/sec, vanilla walking speed
+        self._position_lock = threading.Lock()
+        self._position_thread: threading.Thread | None = None
+        self._position_stop = threading.Event()
+        self._position_interval = 0.5  # heartbeat while idle (server-side anti-AFK)
+
+        # -- world state --------------------------------------------------
+        # None when this version's chunk format or block table isn't supported.
+        self.world: World | None = None
+        if version not in _LEGACY_CHUNK_FORMAT_VERSIONS:
+            try:
+                self.world = World(get_block_table(version), self.protocol.protocol_version)
+            except ValueError:
+                pass  # no block table (and no fallback) for this version
+        # Optional ResourcePack (see resourcepack.py) used by render_map() /
+        # save_map() / start_live_map() when no per-call one is given.
+        self.resource_pack = None
+
+        # -- inventory state ------------------------------------------------
+        try:
+            self.inventory = Inventory(get_item_table(version))
+        except ValueError:
+            self.inventory = Inventory(None)  # no item table; names stay None
+
+        # -- player state ---------------------------------------------------
+        # Populated from server packets once in Play; None until first seen.
+        self.entity_id = None            # our own entity id (from Join Game)
+        self.health = None               # 0.0-20.0
+        self.food = None                 # 0-20
+        self.saturation = None           # float
+        self.gamemode = None             # "survival"/"creative"/"adventure"/"spectator"
+        self.experience = {"bar": 0.0, "level": 0, "total": 0}
+        self.effects: dict = {}          # effect_id -> {effect_id, amplifier, duration}
+
+    # -- events ------------------------------------------------------------
+    def on(self, event, fn=None):
+        """Register a callback. `fn(name, params, raw)` for packet events, or
+        `fn(*args)` for lifecycle events ('state', 'login', 'disconnect').
+        Usable directly (`client.on("chat", handler)`) or as a decorator
+        (`@client.on("chat")`)."""
+        if fn is None:
+            def decorator(fn):
+                self._handlers[event].append(fn)
+                return fn
+            return decorator
+        self._handlers[event].append(fn)
+        return fn
+
+    def off(self, event, fn) -> bool:
+        """Remove a previously-registered callback. Returns True if it was
+        found and removed. Safe to call with an unregistered fn."""
+        handlers = self._handlers.get(event)
+        if handlers and fn in handlers:
+            handlers.remove(fn)
+            return True
+        return False
+
+    def emit(self, event, *args):
+        # Iterate a copy: a handler may off() itself (or another) mid-dispatch.
+        for fn in list(self._handlers.get(event, ())):
+            fn(*args)
+
+    # -- sending -----------------------------------------------------------
+    def send(self, name, params=None):
+        body = self.protocol.encode(self.state, "toServer", name, params or {})
+        override = self.id_overrides.get((self.state, name))
+        if override is not None:
+            body = self._swap_packet_id(body, override)
+        self.conn.send_packet(body)
+
+    @staticmethod
+    def _swap_packet_id(body, new_id):
+        from .buffer import Buffer
+        b = Buffer(body)
+        b.read_varint()  # discard schema id
+        rest = b.read_rest()
+        out = Buffer()
+        out.write_varint(new_id)
+        out.write_bytes(rest)
+        return out.getvalue()
+
+    def _has(self, state, direction, name):
+        return name in self.protocol.id_to_name(state, direction).values()
+
+    def _set_state(self, state):
+        self.state = state
+        self.emit("state", state)
+
+    # -- connect / login ---------------------------------------------------
+    def connect(self):
+        """Open the socket, log in, then block pumping packets until closed."""
+        self.conn.connect()
+        # Handshake: advertise the server's own protocol number so a server
+        # newer than our vendored schema still accepts us.
+        self.conn.send_packet(self.protocol.encode(
+            "handshaking", "toServer", "set_protocol", {
+                "protocolVersion": self.advertise_protocol,
+                "serverHost": self.host, "serverPort": self.port, "nextState": 2,
+            }))
+        self._set_state("login")
+        self.send("login_start", self._login_start_params())
+
+        self.running = True
+        try:
+            while self.running:
+                try:
+                    self._pump()
+                except OSError:
+                    if not self.running:
+                        break  # socket closed by stop(); clean exit
+                    raise
+        except (ConnectionError, Disconnected):
+            self.running = False
+            raise
+        finally:
+            self.conn.close()
+
+    def stop(self):
+        """Ask the pump loop to exit and close the socket."""
+        self.running = False
+        self._position_stop.set()
+        self.stop_live_map()
+        self.stop_stream_server()
+        self.conn.close()
+
+    def chat(self, message):
+        """Send a chat message (or command if it starts with '/')."""
+        if message.startswith("/") and self._has("play", "toServer", "chat_command"):
+            self.send("chat_command", {"command": message[1:]})
+            return
+        if self._has("play", "toServer", "chat_message"):
+            import os
+            import time as _t
+            params = {
+                "message": message,
+                "timestamp": int(_t.time() * 1000),
+                "salt": int.from_bytes(os.urandom(8), "big", signed=True),
+                "signature": None,          # unsigned (server must allow it)
+                "offset": 0,
+                "acknowledged": b"\x00\x00\x00",
+                "checksum": 0,
+            }
+            # only send fields this version actually defines
+            fields = self._packet_fields("play", "toServer", "chat_message")
+            self.send("chat_message", {k: v for k, v in params.items() if k in fields})
+        elif self._has("play", "toServer", "chat"):
+            self.send("chat", {"message": message})
+
+    def _login_start_params(self):
+        # login_start fields vary by version; fill what exists.
+        fields = self._packet_fields("login", "toServer", "login_start")
+        params = {}
+        if "username" in fields:
+            params["username"] = self.username
+        if "playerUUID" in fields:
+            params["playerUUID"] = self.uuid
+        return params
+
+    def _packet_fields(self, state, direction, name):
+        """Names of the top-level fields of a packet body (best-effort)."""
+        proto, _ = self.protocol._codec(state, direction)
+        sw = proto.types["packet"][1][1]["type"][1]["fields"]
+        tdef = sw.get(name)
+        while isinstance(tdef, str) and tdef in proto.types:
+            tdef = proto.types[tdef]
+        if isinstance(tdef, list) and tdef[0] == "container":
+            return {f.get("name") for f in tdef[1]}
+        return set()
+
+    # -- the pump ----------------------------------------------------------
+    def _pump(self):
+        raw = self.conn.read_packet()
+        try:
+            name = self.protocol.decode_name(self.state, "toClient", raw)
+        except KeyError as exc:
+            self.emit("unknown_packet", raw)
+            return
+        handler = getattr(self, f"_on_{self.state}", None)
+        if handler is None:
+            return
+        try:
+            handler(name, raw)
+        except Exception as exc:  # noqa: BLE001
+            # One packet whose body doesn't match our schema (expected with a
+            # drift-hybrid schema like 26.2, which borrows 1.21.11 layouts) --
+            # a mis-decode can surface as BufferUnderrun, struct.error,
+            # OverflowError, or others depending on which field diverged.
+            # read_packet() is length-framed, so the stream is still aligned on
+            # the next packet: skip this one rather than dropping the whole
+            # connection. Surfaced as a non-fatal event, and logged to stderr
+            # (journal) so a recurring offender can be pinned down.
+            self.emit("decode_error", name, repr(exc))
+            print(f"[mcbot] skipped {self.state}/{name}: "
+                  f"{type(exc).__name__}: {exc}", file=sys.stderr)
+
+    def _decode(self, name, raw):
+        """Fully decode a packet's params, tolerating schema drift."""
+        try:
+            _, params = self.protocol.decode(self.state, "toClient", raw)
+            return params
+        except (BufferUnderrun, KeyError, ValueError):
+            return None
+
+    # -- per-state handlers ------------------------------------------------
+    def _on_login(self, name, raw):
+        if name == "compress":
+            params = self._decode(name, raw)
+            self.conn.compression_threshold = params["threshold"]
+        elif name == "encryption_begin":
+            raise OnlineModeRequired(
+                "server is in online mode (sent encryption_begin); "
+                "offline login cannot continue")
+        elif name == "login_plugin_request":
+            params = self._decode(name, raw) or {}
+            self.send("login_plugin_response",
+                      {"messageId": params.get("messageId", 0), "data": None})
+        elif name == "success":
+            params = self._decode(name, raw)
+            self.emit("login", params)
+            if self._has("login", "toServer", "login_acknowledged"):
+                self.send("login_acknowledged", {})
+            if self.protocol.has_configuration:
+                self._enter_configuration()
+            else:
+                self._set_state("play")
+        elif name == "disconnect":
+            params = self._decode(name, raw)
+            self.emit("disconnect", params)
+            self.running = False
+
+    def _enter_configuration(self):
+        self._set_state("configuration")
+        # Announce client settings immediately (some servers require it).
+        if self._has("configuration", "toServer", "settings"):
+            self.send("settings", self._default_settings())
+
+    def _on_configuration(self, name, raw):
+        if name == "keep_alive":
+            params = self._decode(name, raw)
+            self.send("keep_alive", {"keepAliveId": params["keepAliveId"]})
+        elif name == "ping":
+            params = self._decode(name, raw)
+            self.send("pong", params)
+        elif name == "select_known_packs":
+            # claim no packs so the server streams full registry data
+            self.send("select_known_packs", {"packs": []})
+        elif name == "finish_configuration":
+            self.send("finish_configuration", {})
+            self._set_state("play")
+            self.emit("ready")
+        elif name == "disconnect":
+            self.emit("disconnect", self._decode(name, raw))
+            self.running = False
+        # registry_data / tags / feature_flags / custom_payload: ignored
+
+    def _on_play(self, name, raw):
+        params = None
+        if name == "keep_alive":
+            params = self._decode(name, raw)
+            self.send("keep_alive", {"keepAliveId": params["keepAliveId"]})
+        elif name == "ping" and self._has("play", "toServer", "pong"):
+            params = self._decode(name, raw)
+            self.send("pong", params)
+        elif name == "position":
+            # Server-authoritative position sync (spawn + teleports). Always
+            # decoded and confirmed -- this is how we know where we are.
+            params = self._decode(name, raw)
+            self._handle_position_sync(params)
+        elif name == "map_chunk" and self.world is not None:
+            params = self._decode(name, raw)
+            self.world.load_chunk(params["x"], params["z"], params["chunkData"])
+        elif name == "unload_chunk" and self.world is not None:
+            params = self._decode(name, raw)
+            self.world.unload_chunk(params["chunkX"], params["chunkZ"])
+        elif name == "block_change" and self.world is not None:
+            params = self._decode(name, raw)
+            loc = params["location"]
+            self.world.set_block_state(loc["x"], loc["y"], loc["z"], params["type"])
+        elif name == "multi_block_change" and self.world is not None:
+            params = self._decode(name, raw)
+            self._apply_multi_block_change(params)
+        elif name == "window_items":
+            params = self._decode(name, raw)
+            self.inventory.set_window_items(
+                params["windowId"], params.get("stateId", 0),
+                params["items"], params.get("carriedItem"))
+        elif name == "set_slot":
+            params = self._decode(name, raw)
+            self.inventory.set_slot(
+                params["windowId"], params.get("stateId", 0),
+                params["slot"], params["item"])
+        elif name == "open_window":
+            params = self._decode(name, raw)
+            self.inventory.open_window(
+                params["windowId"], params.get("inventoryType"), params.get("windowTitle"))
+        elif name == "close_window":
+            params = self._decode(name, raw)
+            self.inventory.close_window()
+        elif name == "held_item_slot":
+            params = self._decode(name, raw)
+            self.inventory.held_slot = params["slot"]
+        elif name in ("login", "respawn", "update_health", "game_state_change",
+                      "experience", "entity_effect", "remove_entity_effect"):
+            params = self._decode(name, raw)
+            if params is not None:
+                self._update_player_state(name, params)
+        elif name in ("kick_disconnect", "disconnect"):
+            self.emit("disconnect", self._decode(name, raw))
+            self.running = False
+            return
+        # Surface every packet as an event. Decode params only when someone is
+        # listening for this packet (or for 'chat'/'packet'), to avoid paying
+        # to parse thousands of movement/metadata packets nobody asked for.
+        if params is None:
+            wanted = (self._handlers.get(name) or self._handlers.get("packet")
+                      or (self._handlers.get("chat") and name in _CHAT_PACKETS))
+            if wanted:
+                params = self._decode(name, raw)
+        if name in _CHAT_PACKETS:
+            self.emit("chat", name, params, raw)
+        self.emit(name, name, params, raw)
+        self.emit("packet", name, params, raw)
+
+    # -- movement ------------------------------------------------------------
+    # Relative-axis bits for the legacy (<=1.20.1) raw-int position "flags".
+    _LEGACY_REL_BITS = {"x": 0x01, "y": 0x02, "z": 0x04, "yaw": 0x08, "pitch": 0x10}
+
+    def _handle_position_sync(self, params):
+        flags = params.get("flags", 0)
+
+        def is_relative(axis):
+            if isinstance(flags, dict):
+                return bool(flags.get(axis))
+            return bool(flags & self._LEGACY_REL_BITS[axis])
+
+        with self._position_lock:
+            pos = self.position
+            for axis in ("x", "y", "z", "yaw", "pitch"):
+                pos[axis] = (pos[axis] + params[axis]) if is_relative(axis) else params[axis]
+
+        if "teleportId" in params:
+            confirm_name = ("teleport_confirm"
+                             if self._has("play", "toServer", "teleport_confirm")
+                             else "accept_teleportation")
+            if self._has("play", "toServer", confirm_name):
+                self.send(confirm_name, {"teleportId": params["teleportId"]})
+
+        first_spawn = not self.spawned
+        self.spawned = True
+        if first_spawn:
+            self._start_position_ticker()
+        self.emit("spawn" if first_spawn else "move", dict(self.position))
+
+    def _start_position_ticker(self):
+        if self._position_thread and self._position_thread.is_alive():
+            return
+        self._position_stop.clear()
+        self._position_thread = threading.Thread(
+            target=self._position_tick_loop, daemon=True)
+        self._position_thread.start()
+
+    def _snap_to_ground(self) -> None:
+        """Scan downward from the bot's feet and snap Y to the top of the
+        highest solid block below.  No-ops when the chunk isn't loaded yet
+        or when the world is unavailable.  This is simple floor-snapping,
+        not full physics -- but it is enough to satisfy the vanilla server's
+        anti-float check while the bot is standing still."""
+        if self.world is None:
+            return
+        with self._position_lock:
+            x, y, z = self.position["x"], self.position["y"], self.position["z"]
+        foot_x, foot_z = int(math.floor(x)), int(math.floor(z))
+        foot_y = int(math.floor(y))
+        # Scan down from current foot Y, limited to 32 blocks so a bot
+        # mid-air over an unloaded chunk doesn't scan forever.
+        scan_limit = max(self.world.min_y, foot_y - 32)
+        ground_y = None
+        for by in range(foot_y, scan_limit - 1, -1):
+            name = self.world.block_name_at(foot_x, by, foot_z)
+            if name is None:
+                return  # chunk not loaded -- skip, don't guess
+            if name not in ("air", "cave_air", "void_air"):
+                ground_y = by
+                break
+        if ground_y is None:
+            return
+        new_y = float(ground_y + 1)  # stand on top of the solid block
+        with self._position_lock:
+            if abs(self.position["y"] - new_y) > 0.001:
+                self.position["y"] = new_y
+                self.position["on_ground"] = True
+
+    def _position_tick_loop(self):
+        while not self._position_stop.wait(self._position_interval):
+            if self.state == "play":
+                self._snap_to_ground()
+                self._send_position_update()
+
+
+    def _position_update_params(self, packet_name="position_look"):
+        fields = self._packet_fields("play", "toServer", packet_name)
+        with self._position_lock:
+            pos = dict(self.position)
+        params = {k: pos[k] for k in ("x", "y", "z", "yaw", "pitch") if k in fields}
+        if "onGround" in fields:
+            params["onGround"] = pos["on_ground"]
+        if "flags" in fields:
+            params["flags"] = {"onGround": pos["on_ground"], "hasHorizontalCollision": False}
+        return params
+
+    def _send_position_update(self):
+        if self._has("play", "toServer", "position_look"):
+            self.send("position_look", self._position_update_params("position_look"))
+        elif self._has("play", "toServer", "flying"):
+            self.send("flying", self._position_update_params("flying"))
+
+    def get_position(self):
+        """Thread-safe snapshot of the bot's tracked position/orientation."""
+        with self._position_lock:
+            return dict(self.position)
+
+    def look(self, yaw, pitch, on_ground=None):
+        """Set the bot's facing direction and notify the server immediately."""
+        with self._position_lock:
+            self.position["yaw"] = float(yaw) % 360.0
+            self.position["pitch"] = max(-90.0, min(90.0, float(pitch)))
+            if on_ground is not None:
+                self.position["on_ground"] = on_ground
+        self._send_position_update()
+
+    def move_to(self, x, y, z, speed=None):
+        """Walk in a straight line to (x, y, z), blocking the calling thread.
+
+        This has no collision or gravity simulation -- it linearly
+        interpolates position at a fixed 20Hz tick and reports it to the
+        server, the same "dead reckoning" approach mineflayer's bare
+        movement plugin uses before physics. It will happily walk through
+        walls or off ledges; call from a background thread if you don't
+        want to block your event handlers.
+        """
+        speed = speed or self.walk_speed
+        tick = 0.05  # 20 Hz, matches the vanilla server tick rate
+        with self._position_lock:
+            start = (self.position["x"], self.position["y"], self.position["z"])
+        dx, dy, dz = x - start[0], y - start[1], z - start[2]
+        distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if distance < 1e-6:
+            return
+        steps = max(1, int((distance / speed) / tick))
+        for i in range(1, steps + 1):
+            if not self.running:
+                return
+            t = i / steps
+            with self._position_lock:
+                self.position["x"] = start[0] + dx * t
+                self.position["y"] = start[1] + dy * t
+                self.position["z"] = start[2] + dz * t
+            self._send_position_update()
+            _time.sleep(tick)
+
+    def _apply_multi_block_change(self, params):
+        coords = params["chunkCoordinates"]
+        section_x, section_y, section_z = coords["x"], coords["y"], coords["z"]
+        for record in params["records"]:
+            state_id = record >> 12
+            local = record & 0xFFF
+            lx, lz, ly = (local >> 8) & 0xF, (local >> 4) & 0xF, local & 0xF
+            self.world.set_block_state(
+                section_x * 16 + lx, section_y * 16 + ly, section_z * 16 + lz, state_id)
+
+    # -- player state --------------------------------------------------------
+    _GAMEMODES = {0: "survival", 1: "creative", 2: "adventure", 3: "spectator"}
+
+    @classmethod
+    def _gamemode_name(cls, value):
+        """Normalize a gamemode (int, float, or already-a-name) to a name."""
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return None
+        return cls._GAMEMODES.get(int(value), str(value))
+
+    def _update_player_state(self, name, params):
+        """Fold a decoded player-related packet into tracked player state.
+        Emits a 'player_state' event when anything changed."""
+        if name == "login":
+            self.entity_id = params.get("entityId", self.entity_id)
+            self.effects.clear()  # fresh world; old effects no longer apply
+            self.gamemode = self._extract_gamemode(params) or self.gamemode
+        elif name == "respawn":
+            self.effects.clear()
+            gm = self._extract_gamemode(params)
+            if gm is not None:
+                self.gamemode = gm
+        elif name == "update_health":
+            self.health = params.get("health")
+            self.food = params.get("food")
+            self.saturation = params.get("foodSaturation")
+        elif name == "game_state_change":
+            # reason is "change_game_mode" (mapper) or 3 (raw u8), value in gameMode
+            reason = params.get("reason")
+            if reason in ("change_game_mode", 3):
+                self.gamemode = self._gamemode_name(params.get("gameMode"))
+        elif name == "experience":
+            self.experience = {
+                "bar": params.get("experienceBar", 0.0),
+                "level": params.get("level", 0),
+                "total": params.get("totalExperience", 0),
+            }
+        elif name == "entity_effect":
+            if params.get("entityId") == self.entity_id:
+                eid = params.get("effectId")
+                self.effects[eid] = {
+                    "effect_id": eid,
+                    "amplifier": params.get("amplifier", 0),
+                    "duration": params.get("duration", 0),
+                }
+        elif name == "remove_entity_effect":
+            if params.get("entityId") == self.entity_id:
+                self.effects.pop(params.get("effectId"), None)
+        self.emit("player_state", self.player_state())
+
+    def _extract_gamemode(self, params):
+        """Gamemode from a login/respawn packet, whichever shape the version
+        uses: a top-level field (<=1.18) or nested in `worldState`/SpawnInfo."""
+        if "gameMode" in params or "gamemode" in params:
+            return self._gamemode_name(params.get("gameMode", params.get("gamemode")))
+        world_state = params.get("worldState")
+        if isinstance(world_state, dict):
+            return self._gamemode_name(world_state.get("gamemode", world_state.get("gameMode")))
+        return None
+
+    def player_state(self) -> dict:
+        """Snapshot of tracked player vitals/mode/effects/xp + position."""
+        return {
+            "entity_id": self.entity_id,
+            "health": self.health,
+            "food": self.food,
+            "saturation": self.saturation,
+            "gamemode": self.gamemode,
+            "experience": dict(self.experience),
+            "effects": [dict(e) for e in self.effects.values()],
+            "position": self.get_position(),
+        }
+
+    # -- world queries -------------------------------------------------------
+    def block_at(self, x, y, z):
+        """Block name at an absolute (x, y, z), or None if unloaded/unsupported."""
+        if self.world is None:
+            return None
+        return self.world.block_name_at(int(x), int(y), int(z))
+
+    def nearby_blocks(self, radius=8, include_air=False):
+        """Block name + position for every loaded block within `radius` of
+        the bot's current position. Empty list if world tracking is off."""
+        if self.world is None:
+            return []
+        with self._position_lock:
+            x, y, z = self.position["x"], self.position["y"], self.position["z"]
+        return self.world.nearby_blocks(x, y, z, radius, include_air=include_air)
+
+    # -- map rendering ---------------------------------------------------
+    def render_map(self, radius=64, resource_pack=None):
+        """A numpy uint8 (H, W, 3) top-down map of loaded chunks centered on
+        the bot. Requires numpy (`pip install numpy`) and world tracking.
+        `resource_pack`: an optional `ResourcePack` (see `resourcepack.py`) to
+        color blocks from real textures instead of the built-in
+        approximations; defaults to `self.resource_pack` if set."""
+        from .render import render_top_down
+        if self.world is None:
+            raise ValueError("render_map requires world tracking (unsupported for this version)")
+        with self._position_lock:
+            pos = (self.position["x"], self.position["y"], self.position["z"])
+        return render_top_down(self.world, int(pos[0]), int(pos[2]), radius, bot_position=pos,
+                                resource_pack=resource_pack or self.resource_pack)
+
+    def save_map(self, path, radius=64, resource_pack=None):
+        """Render and write a PNG of the current top-down map to `path`."""
+        from .render import encode_png
+        with open(path, "wb") as fh:
+            fh.write(encode_png(self.render_map(radius, resource_pack)))
+
+    def start_live_map(self, path, interval=0.5, radius=64, resource_pack=None):
+        """Continuously re-render and save the map to `path` every `interval`
+        seconds, in a background thread, until `stop_live_map()`."""
+        self._live_map_stop = threading.Event()
+
+        def loop():
+            while not self._live_map_stop.wait(interval):
+                if self.state == "play":
+                    try:
+                        self.save_map(path, radius, resource_pack)
+                    except ValueError:
+                        pass  # world not ready yet (no chunks loaded)
+
+        self._live_map_thread = threading.Thread(target=loop, daemon=True)
+        self._live_map_thread.start()
+
+    def stop_live_map(self):
+        if getattr(self, "_live_map_stop", None) is not None:
+            self._live_map_stop.set()
+
+    # -- streaming world data to a separate render process --------------------
+    def start_stream_server(self, host="127.0.0.1", port=25566, radius=48, tick_interval=0.2):
+        """Serve nearby chunk data + live position to `ChunkStreamClient`
+        connections, so a separate process can render without costing this
+        bot's event loop anything beyond cheap background-thread work.
+        Requires world tracking (unsupported for this version otherwise)."""
+        from .stream import ChunkStreamServer
+        if self.world is None:
+            raise ValueError("start_stream_server requires world tracking (unsupported for this version)")
+        self._stream_server = ChunkStreamServer(
+            self, host=host, port=port, radius=radius, tick_interval=tick_interval)
+        return self._stream_server
+
+    def stop_stream_server(self):
+        if getattr(self, "_stream_server", None) is not None:
+            self._stream_server.stop()
+            self._stream_server = None
+
+    # -- inventory -----------------------------------------------------------
+    def select_hotbar(self, slot: int) -> None:
+        """Select a hotbar slot (0-8) as the held item."""
+        if not (0 <= slot <= 8):
+            raise ValueError("hotbar slot must be 0-8")
+        fields = self._packet_fields("play", "toServer", "held_item_slot")
+        key = "slotId" if "slotId" in fields else "slot"
+        self.send("held_item_slot", {key: slot})
+        self.inventory.held_slot = slot
+
+    def creative_give(self, slot: int, item_name: str, count: int = 1) -> None:
+        """Place an item stack directly into a slot. Creative mode only --
+        the server silently ignores this in survival."""
+        item_id = self.inventory.item_table.id_for(item_name) if self.inventory.item_table else None
+        if item_id is None:
+            raise ValueError(f"unknown item {item_name!r} for this version")
+        field_names = self._slot_field_names("toServer", "set_creative_slot", "item")
+        self.send("set_creative_slot", {
+            "slot": slot, "item": make_slot_value(field_names, item_id, count)})
+
+    def close_window(self) -> None:
+        """Close whichever non-player window is currently open."""
+        window_id = self.inventory.window_id
+        if window_id != 0:
+            self.send("close_window", {"windowId": window_id})
+        self.inventory.close_window()
+
+    def click_slot(self, *args, **kwargs):
+        """Not implemented: survival-mode slot clicks (`window_click`) require
+        replicating the server's item-hash algorithm for `HashedSlot` (added
+        alongside data components, 1.21.2+) to declare predicted slot/cursor
+        state. That hashing scheme isn't implemented here. Use
+        `creative_give` for creative-mode item placement instead."""
+        raise NotImplementedError(
+            "window_click (survival slot clicking) is not implemented -- "
+            "see click_slot's docstring")
+
+    def _slot_field_names(self, direction, packet_name, field_name):
+        """Outer field names of a packet field's resolved container type."""
+        proto, _ = self.protocol._codec("play", direction)
+        sw = proto.types["packet"][1][1]["type"][1]["fields"]
+        tdef = sw.get(packet_name)
+        while isinstance(tdef, str) and tdef in proto.types:
+            tdef = proto.types[tdef]
+        if not (isinstance(tdef, list) and tdef[0] == "container"):
+            return set()
+        field = next((f for f in tdef[1] if f.get("name") == field_name), None)
+        if field is None:
+            return set()
+        ftdef = field["type"]
+        while isinstance(ftdef, str) and ftdef in proto.types:
+            ftdef = proto.types[ftdef]
+        if isinstance(ftdef, list) and ftdef[0] == "container":
+            return {f.get("name") for f in ftdef[1] if "name" in f}
+        return set()
+
+    # -- defaults ----------------------------------------------------------
+    def _default_settings(self):
+        fields = self._packet_fields("configuration", "toServer", "settings")
+        base = {
+            "locale": "en_US", "viewDistance": 8, "chatFlags": 0,
+            "chatColors": True, "skinParts": 0x7F, "mainHand": 1,
+            "enableTextFiltering": False, "enableServerListing": True,
+            "particleStatus": "all",
+        }
+        return {k: v for k, v in base.items() if k in fields}

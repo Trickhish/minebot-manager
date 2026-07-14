@@ -1,0 +1,24 @@
+[Unit]
+Description=mcbot web dashboard (FastAPI)
+After=network-online.target minebot-bothost.service
+Wants=network-online.target
+# The dashboard proxies to the bot-host; prefer starting it after, but don't
+# tie their lifecycles -- the dashboard tolerates the bot-host being down (502).
+Wants=minebot-bothost.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/prog/minebot/dashboard/backend
+# OIDC/session secrets (chmod 600). KEY=VALUE lines; # comments allowed.
+EnvironmentFile=/root/prog/minebot/dashboard/.env
+# Put the mcbot framework on the import path.
+Environment=PYTHONPATH=/root/prog/minebot/framework
+ExecStart=/root/prog/minebot/dashboard/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 21306
+Restart=on-failure
+RestartSec=3
+# Give bot threads a moment to close their sockets on stop.
+TimeoutStopSec=15
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

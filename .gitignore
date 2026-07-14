@@ -1,3 +1,46 @@
+# -- secrets (OIDC client secret, session key -- chmod 600, never commit) -----
 .env
-__pycache__
-.venv
+.env.*
+*.env
+credentials.env
+*.pem
+*.key
+
+# -- Python -------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# -- virtualenvs --------------------------------------------------------------
+.venv/
+venv/
+env/
+
+# -- runtime / generated state (rebuilt on startup; environment-specific) -----
+# atlas.png/atlas_meta.json: texture atlas cache (rebuilt from the resource pack)
+# bots.json: persisted bot roster    macros.json: saved macros
+dashboard/data/
+# generated map-render output, and the offline re-downloadable ViaVersion cache
+framework/renders/
+framework/tools/_viaversion_cache/
+
+# -- logs ---------------------------------------------------------------------
+*.log
+
+# -- vendored resource pack: contains Mojang's copyrighted textures, which this
+# project deliberately does NOT redistribute (see mcbot/resourcepack.py). Keep
+# it local; each user supplies a pack they own. Remove this line to commit it.
+framework/default_rpack.zip
+
+# -- editor / OS --------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

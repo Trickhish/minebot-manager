@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mcbot dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>mcbot<span>dashboard</span></h1>
+    <span id="conn-count" class="muted"></span>
+    <div class="header-user">
+      <button id="btn-macros" class="secondary">⚙ Macros</button>
+      <span id="user-name" class="muted"></span>
+      <button id="btn-logout" class="secondary">Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <aside class="sidebar">
+      <form id="new-bot" class="card">
+        <h2>New bot</h2>
+        <label>Host <input name="host" value="mc.dury.dev" required></label>
+        <div class="row">
+          <label>Port <input name="port" type="number" value="25565" min="1" max="65535"></label>
+          <label class="grow">Version
+            <select name="version" id="version-select"></select>
+          </label>
+        </div>
+        <label>Username <input name="username" value="Bot" required></label>
+        <label class="check"><input type="checkbox" name="auto_reconnect" checked> Auto-reconnect on drop</label>
+        <button type="submit">Spawn bot</button>
+        <p class="error" id="new-bot-error"></p>
+      </form>
+
+      <div class="card grow-card">
+        <h2>Bots</h2>
+        <ul id="bot-list" class="bot-list"></ul>
+      </div>
+    </aside>
+
+    <section class="detail" id="detail">
+      <div class="empty" id="detail-empty">Select or spawn a bot to monitor it.</div>
+
+      <div class="detail-body" id="detail-body" hidden>
+        <div class="detail-header">
+          <div>
+            <h2 id="d-username"></h2>
+            <div class="muted" id="d-target"></div>
+          </div>
+          <div class="detail-header-right">
+            <span class="badge" id="d-state"></span>
+            <div class="muted" id="d-position"></div>
+          </div>
+        </div>
+
+        <div class="detail-actions">
+          <button id="btn-connect" class="secondary">Connect</button>
+          <button id="btn-stop" class="secondary">Disconnect</button>
+          <button id="btn-remove" class="danger">Remove</button>
+        </div>
+        <p class="error" id="detail-error"></p>
+
+        <div class="macro-bar" id="macro-bar"></div>
+
+        <div class="vitals" id="vitals" hidden>
+          <span class="badge gamemode" id="v-gm">—</span>
+          <span class="vital">
+            <span class="vlabel">❤ Health</span>
+            <span class="bar health"><i id="v-health-bar"></i></span>
+            <span class="vtxt" id="v-health-txt">—</span>
+          </span>
+          <span class="vital">
+            <span class="vlabel">🍗 Food</span>
+            <span class="bar food"><i id="v-food-bar"></i></span>
+            <span class="vtxt" id="v-food-txt">—</span>
+          </span>
+          <span class="vital">
+            <span class="vlabel">✦ XP</span>
+            <span class="vtxt" id="v-xp">Lvl 0</span>
+          </span>
+          <span class="effects" id="effects"></span>
+        </div>
+
+        <div class="detail-main">
+          <div class="log" id="log"></div>
+
+          <div class="right-col">
+            <div class="map-panel">
+              <div class="map-toolbar">
+                <span class="map-title">Minimap</span>
+                <label class="map-radius">radius
+                  <select id="map-radius">
+                    <option value="32">32</option>
+                    <option value="64" selected>64</option>
+                    <option value="96">96</option>
+                    <option value="128">128</option>
+                  </select>
+                </label>
+                <label class="map-live"><input type="checkbox" id="map-live" checked> live</label>
+              </div>
+              <div class="map-view">
+                <img id="map-img" alt="minimap">
+                <div class="map-status" id="map-status">waiting for chunks…</div>
+              </div>
+            </div>
+
+            <div class="vision-panel">
+              <div class="map-toolbar">
+                <span class="map-title">Vision</span>
+                <label class="map-radius">range
+                  <select id="vision-range">
+                    <option value="24">24</option>
+                    <option value="40" selected>40</option>
+                    <option value="56">56</option>
+                  </select>
+                </label>
+                <label class="map-live"><input type="checkbox" id="vision-on"> enable</label>
+                <button id="vision-expand" class="mini" title="Expand to full screen">⛶</button>
+              </div>
+              <div class="vision-view">
+                <canvas id="vision-canvas" width="480" height="300"></canvas>
+                <div class="map-status" id="vision-status">disabled</div>
+              </div>
+            </div>
+
+            <div class="inv-panel">
+              <div class="inv-title">Inventory</div>
+              <div class="inv-grid" id="inv-grid">
+                <div class="muted inv-empty">no inventory data yet</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <form id="chat-form" class="chat-form">
+          <input name="message" id="chat-input" placeholder="Send chat or /command…" autocomplete="off">
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <!-- Macro manager modal -->
+  <div class="modal" id="macro-modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Macros</h2>
+        <button class="modal-close" id="macro-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="macro-list-col">
+          <button id="macro-new" class="full">＋ New macro</button>
+          <ul class="macro-defs" id="macro-defs"></ul>
+        </div>
+        <div class="macro-editor-col" id="macro-editor" hidden>
+          <label>Name <input id="me-name" placeholder="my macro"></label>
+
+          <div class="row">
+            <label class="grow">Trigger
+              <select id="me-trigger">
+                <option value="manual">Manual (run button)</option>
+                <option value="event">On event</option>
+                <option value="interval">Interval (loop)</option>
+              </select>
+            </label>
+            <label class="grow" id="me-loop-wrap">Repeat ×
+              <input id="me-loop" type="number" value="1" min="1" max="10000">
+            </label>
+          </div>
+
+          <div class="row" id="me-event-wrap" hidden>
+            <label class="grow">Event
+              <select id="me-event">
+                <option value="chat">Chat message</option>
+                <option value="spawn">Spawn</option>
+                <option value="ready">Ready (joined)</option>
+                <option value="disconnect">Disconnect</option>
+              </select>
+            </label>
+            <label class="grow" id="me-pattern-wrap">Match (regex, optional)
+              <input id="me-pattern" placeholder="e.g. ping">
+            </label>
+          </div>
+
+          <label id="me-interval-wrap" hidden>Every N seconds
+            <input id="me-interval" type="number" value="30" min="1" max="86400">
+          </label>
+
+          <div class="steps-head">Steps <button id="me-add-step" class="mini">＋ Add step</button></div>
+          <div class="steps" id="me-steps"></div>
+
+          <p class="error" id="me-error"></p>
+          <div class="editor-actions">
+            <button id="me-save">Save</button>
+            <button id="me-delete" class="danger" hidden>Delete</button>
+            <button id="me-cancel" class="secondary">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="vision-modal" hidden>
+    <div class="modal-box vision-modal-box">
+      <div class="modal-head">
+        <h2>Bot vision</h2>
+        <button class="modal-close" id="vision-modal-close">✕</button>
+      </div>
+      <div class="vision-stage" id="vision-stage"></div>
+    </div>
+  </div>
+
+  <script src="vision.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

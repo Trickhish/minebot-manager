@@ -1,0 +1,19 @@
+[Unit]
+Description=mcbot bot-host (owns the live bots; outlives the dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/prog/minebot/dashboard/backend
+# Put the mcbot framework on the import path.
+Environment=PYTHONPATH=/root/prog/minebot/framework
+ExecStart=/root/prog/minebot/dashboard/.venv/bin/uvicorn host:app --host 127.0.0.1 --port 21307
+Restart=on-failure
+RestartSec=3
+# Give bot threads a moment to close their sockets on stop.
+TimeoutStopSec=15
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
