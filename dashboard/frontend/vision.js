@@ -562,7 +562,7 @@ const Vision = (() => {
         return;
       }
       const frame = ensurePrismarineFrame();
-      frame.src = `prismarine/index.html?bot=${encodeURIComponent(id)}&range=${encodeURIComponent(range)}`;
+      frame.src = `prismarine/index.html?v=20260714-alt-renderer&bot=${encodeURIComponent(id)}&range=${encodeURIComponent(range)}`;
       status("Prismarine renderer");
     } catch {
       status("Prismarine renderer unavailable");

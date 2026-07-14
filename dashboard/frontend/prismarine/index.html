@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Prismarine Vision</title>
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #87addb; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #status {
+        position: fixed; left: 10px; bottom: 8px; z-index: 2;
+        padding: 3px 6px; border-radius: 4px;
+        background: rgba(15, 23, 42, 0.72); color: #e5edf7;
+        font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">loading...</div>
+    <script src="vendor/three.min.js"></script>
+    <script src="renderer.js?v=20260714-alt-renderer"></script>
+  </body>
+</html>
