@@ -236,8 +236,7 @@ const Vision = (() => {
     return name === "water" || name === "lava"
       || name === "hopper"
       || name === "torch" || name.endsWith("_torch")   // real texture applied via torchParts
-      || name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest")
-      || name.endsWith("_sign") || name.endsWith("_hanging_sign");
+      || name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest");
   }
 
   function rotateCornerY(c, turns) {
