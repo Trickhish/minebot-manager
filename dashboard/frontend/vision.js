@@ -369,7 +369,7 @@ const Vision = (() => {
       ...rotateShapeY({
         opaque: false,
         boxes: [
-          { box: [[0.36, 0.62, 0.02], [0.64, 0.88, 0.28]], color: name.includes("soul") ? PART_COLORS.soulFlame : name.includes("redstone") ? PART_COLORS.redstoneFlame : PART_COLORS.torchFlame, shade: 1 },
+          { box: [[0.36, 0.66, 0.235], [0.64, 0.9, 0.5]], color: name.includes("soul") ? PART_COLORS.soulFlame : name.includes("redstone") ? PART_COLORS.redstoneFlame : PART_COLORS.torchFlame, shade: 1 },
         ],
         planes: [
           { plane: [[0.43, 0.08, 0.02], [0.57, 0.08, 0.16], [0.57, 0.72, 0.42], [0.43, 0.72, 0.28]], color: PART_COLORS.torchWood },
