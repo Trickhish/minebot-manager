@@ -69,6 +69,7 @@ class Protocol:
 
         # (state, direction) -> (ProtoDef, packet_type_def)
         self._codecs: dict = {}
+        self._id_maps: dict = {}
 
     # -- codec access ------------------------------------------------------
     def _codec(self, state: str, direction: str):
@@ -100,9 +101,15 @@ class Protocol:
 
     def id_to_name(self, state: str, direction: str) -> dict:
         """int packet id -> packet name for a (state, direction)."""
+        key = (state, direction)
+        cached = self._id_maps.get(key)
+        if cached is not None:
+            return cached
         proto, _ = self._codec(state, direction)
         mapper_args = proto.types["packet"][1][0]["type"][1]
-        return {int(str(k), 0): v for k, v in mapper_args["mappings"].items()}
+        result = {int(str(k), 0): v for k, v in mapper_args["mappings"].items()}
+        self._id_maps[key] = result
+        return result
 
     def decode_name(self, state: str, direction: str, data: bytes) -> str:
         """Read only the leading packet id and map it to a name (cheap)."""

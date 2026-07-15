@@ -16,7 +16,9 @@ hook is here (`enable_encryption`) but the online handshake lives in `auth/`.
 
 from __future__ import annotations
 
+import select
 import socket
+import threading
 import zlib
 
 from .buffer import Buffer
@@ -31,6 +33,10 @@ class Connection:
         self.compression_threshold = -1  # -1 = compression disabled
         self._encryptor = None
         self._decryptor = None
+        # Encryption is a stateful byte stream. Movement, keepalive, chat, and
+        # heartbeat packets can originate on different threads, so one lock
+        # must cover framing, encryption, and the socket write as a unit.
+        self._send_lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
     def connect(self) -> None:
@@ -86,24 +92,25 @@ class Connection:
     # -- packet i/o --------------------------------------------------------
     def send_packet(self, packet_bytes: bytes) -> None:
         """Frame (and compress) one packet and put it on the wire."""
-        if self.compression_threshold >= 0:
-            if len(packet_bytes) >= self.compression_threshold:
-                data_length = len(packet_bytes)
-                body = zlib.compress(packet_bytes)
+        with self._send_lock:
+            if self.compression_threshold >= 0:
+                if len(packet_bytes) >= self.compression_threshold:
+                    data_length = len(packet_bytes)
+                    body = zlib.compress(packet_bytes)
+                else:
+                    data_length = 0
+                    body = packet_bytes
+                inner = Buffer()
+                inner.write_varint(data_length)
+                inner.write_bytes(body)
+                payload = inner.getvalue()
             else:
-                data_length = 0
-                body = packet_bytes
-            inner = Buffer()
-            inner.write_varint(data_length)
-            inner.write_bytes(body)
-            payload = inner.getvalue()
-        else:
-            payload = packet_bytes
+                payload = packet_bytes
 
-        frame = Buffer()
-        frame.write_varint(len(payload))
-        frame.write_bytes(payload)
-        self._send_all(frame.getvalue())
+            frame = Buffer()
+            frame.write_varint(len(payload))
+            frame.write_bytes(payload)
+            self._send_all(frame.getvalue())
 
     def read_packet(self) -> bytes:
         """Block until a full packet arrives; return its raw id+params bytes."""
@@ -118,3 +125,13 @@ class Connection:
                 return rest
             return zlib.decompress(rest)
         return payload
+
+    def has_pending_data(self) -> bool:
+        """Return whether the socket can be read without blocking."""
+        sock = self.sock
+        if sock is None:
+            return False
+        try:
+            return bool(select.select((sock,), (), (), 0)[0])
+        except (OSError, ValueError):
+            return False

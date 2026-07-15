@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import queue
 import sys
 import threading
 import time as _time
@@ -48,6 +49,7 @@ def offline_uuid(username: str) -> str:
 
 
 _CHAT_PACKETS = ("chat", "system_chat", "player_chat", "profileless_chat")
+_WORLD_PACKETS = ("map_chunk", "unload_chunk", "block_change", "multi_block_change")
 
 
 class OnlineModeRequired(Exception):
@@ -87,6 +89,7 @@ class Client:
         self._position_lock = threading.Lock()
         self._position_thread: threading.Thread | None = None
         self._position_stop = threading.Event()
+        self._client_tick_interval = 0.05  # vanilla's 20 Hz client tick
         self._position_interval = 0.5  # heartbeat while idle (server-side anti-AFK)
         self._control_until = 0.0
         self._control_velocity_y = 0.0
@@ -100,6 +103,9 @@ class Client:
                 self.world = World(get_block_table(version), self.protocol.protocol_version)
             except ValueError:
                 pass  # no block table (and no fallback) for this version
+        self._world_packet_queue: queue.Queue = queue.Queue()
+        self._world_worker: threading.Thread | None = None
+        self._world_stop = threading.Event()
         # Optional ResourcePack (see resourcepack.py) used by render_map() /
         # save_map() / start_live_map() when no per-call one is given.
         self.resource_pack = None
@@ -201,12 +207,14 @@ class Client:
             self.running = False
             raise
         finally:
+            self._world_stop.set()
             self.conn.close()
 
     def stop(self):
         """Ask the pump loop to exit and close the socket."""
         self.running = False
         self._position_stop.set()
+        self._world_stop.set()
         self.stop_live_map()
         self.stop_stream_server()
         self.conn.close()
@@ -354,19 +362,10 @@ class Client:
             # decoded and confirmed -- this is how we know where we are.
             params = self._decode(name, raw)
             self._handle_position_sync(params)
-        elif name == "map_chunk" and self.world is not None:
-            params = self._decode(name, raw)
-            self.world.load_chunk(params["x"], params["z"], params["chunkData"])
-        elif name == "unload_chunk" and self.world is not None:
-            params = self._decode(name, raw)
-            self.world.unload_chunk(params["chunkX"], params["chunkZ"])
-        elif name == "block_change" and self.world is not None:
-            params = self._decode(name, raw)
-            loc = params["location"]
-            self.world.set_block_state(loc["x"], loc["y"], loc["z"], params["type"])
-        elif name == "multi_block_change" and self.world is not None:
-            params = self._decode(name, raw)
-            self._apply_multi_block_change(params)
+        elif name in _WORLD_PACKETS and self.world is not None:
+            # Chunk decoding is CPU-heavy. Keep it off the socket pump so a
+            # burst of terrain data cannot delay keepalive replies.
+            self._queue_world_packet(name, raw)
         elif name == "window_items":
             params = self._decode(name, raw)
             self.inventory.set_window_items(
@@ -408,6 +407,49 @@ class Client:
             self.emit("chat", name, params, raw)
         self.emit(name, name, params, raw)
         self.emit("packet", name, params, raw)
+
+    def _queue_world_packet(self, name, raw):
+        if self._world_worker is None or not self._world_worker.is_alive():
+            self._world_stop.clear()
+            self._world_worker = threading.Thread(
+                target=self._world_packet_loop, daemon=True,
+                name=f"world-{self.username}")
+            self._world_worker.start()
+        self._world_packet_queue.put((name, raw))
+
+    def _world_packet_loop(self):
+        while not self._world_stop.is_set():
+            try:
+                name, raw = self._world_packet_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                # Chunk decoding is CPU-heavy pure Python and therefore still
+                # contends for the GIL even on this worker thread. Let the
+                # socket pump drain protocol traffic first so keepalives never
+                # sit behind the initial terrain burst.
+                while (not self._world_stop.is_set()
+                       and self.conn.has_pending_data()):
+                    _time.sleep(0.005)
+                params = self._decode(name, raw)
+                if params is None:
+                    continue
+                if name == "map_chunk":
+                    self.world.load_chunk(
+                        params["x"], params["z"], params["chunkData"])
+                elif name == "unload_chunk":
+                    self.world.unload_chunk(params["chunkX"], params["chunkZ"])
+                elif name == "block_change":
+                    loc = params["location"]
+                    self.world.set_block_state(
+                        loc["x"], loc["y"], loc["z"], params["type"])
+                elif name == "multi_block_change":
+                    self._apply_multi_block_change(params)
+            except Exception as exc:  # noqa: BLE001 - skip one malformed update
+                print(f"[mcbot] skipped world/{name}: "
+                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            finally:
+                self._world_packet_queue.task_done()
 
     # -- movement ------------------------------------------------------------
     # Relative-axis bits for the legacy (<=1.20.1) raw-int position "flags".
@@ -485,10 +527,21 @@ class Client:
         return None
 
     def _position_tick_loop(self):
-        while not self._position_stop.wait(self._position_interval):
-            if self.state == "play":
-                self._snap_to_ground()
-                self._send_position_update()
+        next_position = _time.monotonic() + self._position_interval
+        while not self._position_stop.wait(self._client_tick_interval):
+            if self.state != "play":
+                continue
+            try:
+                now = _time.monotonic()
+                if now >= next_position:
+                    self._snap_to_ground()
+                    self._send_position_update()
+                    next_position = now + self._position_interval
+                self._send_tick_end()
+            except OSError:
+                # The socket pump owns disconnect reporting. A concurrent
+                # ticker should simply stop once that socket has gone away.
+                return
 
 
     def _position_update_params(self, packet_name="position_look"):
@@ -507,6 +560,12 @@ class Client:
             self.send("position_look", self._position_update_params("position_look"))
         elif self._has("play", "toServer", "flying"):
             self.send("flying", self._position_update_params("flying"))
+
+    def _send_tick_end(self):
+        # Modern servers use this boundary to finish processing each client
+        # tick. Older protocol schemas do not define it, so this is a no-op.
+        if self._has("play", "toServer", "tick_end"):
+            self.send("tick_end", {})
 
     def get_position(self):
         """Thread-safe snapshot of the bot's tracked position/orientation."""
