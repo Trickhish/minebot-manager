@@ -351,7 +351,8 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
     queue = bot.subscribe()
     owner = object()
     controls = {
-        "active": False, "forward": 0.0, "strafe": 0.0, "vertical": 0.0,
+        "active": False, "forward": 0.0, "strafe": 0.0,
+        "jump": False, "sneak": False,
         "yaw": 0.0, "pitch": 0.0, "updated": 0.0,
     }
 
@@ -381,7 +382,8 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
                 active=True,
                 forward=_control_number(data.get("forward"), -1.0, 1.0),
                 strafe=_control_number(data.get("strafe"), -1.0, 1.0),
-                vertical=_control_number(data.get("vertical"), -1.0, 1.0),
+                jump=bool(data.get("jump")),
+                sneak=bool(data.get("sneak")),
                 yaw=_control_number(data.get("yaw"), -360000.0, 360000.0),
                 pitch=_control_number(data.get("pitch"), -90.0, 90.0),
                 updated=asyncio.get_running_loop().time(),
@@ -402,8 +404,8 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
                 continue
             await asyncio.to_thread(
                 bot.client.control_step,
-                controls["forward"], controls["strafe"], controls["vertical"],
-                controls["yaw"], controls["pitch"], 0.05,
+                controls["forward"], controls["strafe"], controls["jump"],
+                controls["sneak"], controls["yaw"], controls["pitch"], 0.05,
             )
 
     tasks = [asyncio.create_task(fn()) for fn in

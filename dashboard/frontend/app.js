@@ -493,8 +493,8 @@ function sendVisionControl(active = visionControl.active) {
       active,
       forward: active ? controlAxis("KeyW", "KeyS") : 0,
       strafe: active ? controlAxis("KeyD", "KeyA") : 0,
-      vertical: active ? (visionControl.keys.has("Space") ? 1 : 0)
-        - (visionControl.keys.has("ShiftLeft") || visionControl.keys.has("ShiftRight") ? 1 : 0) : 0,
+      jump: active && visionControl.keys.has("Space"),
+      sneak: active && (visionControl.keys.has("ShiftLeft") || visionControl.keys.has("ShiftRight")),
       yaw: look?.yaw ?? 0,
       pitch: look?.pitch ?? 0,
     },
@@ -517,6 +517,7 @@ function startVisionControl() {
   openVisionModal();
   const target = Vision.element();
   visionControl.active = true;
+  Vision.setControlActive(true);
   visionControl.keys.clear();
   setControlUi(true);
   sendVisionControl();
@@ -537,6 +538,7 @@ function stopVisionControl() {
   if (!visionControl.active) return;
   sendVisionControl(false);
   visionControl.active = false;
+  Vision.setControlActive(false);
   visionControl.keys.clear();
   clearInterval(visionControl.timer);
   visionControl.timer = null;

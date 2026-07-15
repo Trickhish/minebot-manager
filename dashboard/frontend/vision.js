@@ -74,6 +74,7 @@ const Vision = (() => {
   let botId = null, range = 40;
   let refreshMs = DEFAULT_GEOM_REFRESH_MS;
   let pose = null, poseTarget = null, lastFrameTime = 0;
+  let controlActive = false;
   let geomTimer = null, rafHandle = null, fetching = false;
   let rendererMode = localStorage.getItem("visionRenderer") || "custom";
 
@@ -852,8 +853,10 @@ const Vision = (() => {
       if (!botId || p == null || p.x == null) return;
       poseTarget = {
         eye: [p.x, p.y + 1.62, p.z],
-        yaw: p.yaw != null ? p.yaw : poseTarget?.yaw ?? pose?.yaw ?? 0,
-        pitch: p.pitch != null ? p.pitch : poseTarget?.pitch ?? pose?.pitch ?? 0,
+        yaw: controlActive ? poseTarget?.yaw ?? pose?.yaw ?? 0
+          : p.yaw != null ? p.yaw : poseTarget?.yaw ?? pose?.yaw ?? 0,
+        pitch: controlActive ? poseTarget?.pitch ?? pose?.pitch ?? 0
+          : p.pitch != null ? p.pitch : poseTarget?.pitch ?? pose?.pitch ?? 0,
       };
     },
     adjustLook(dx, dy) {
@@ -862,12 +865,17 @@ const Vision = (() => {
       const yaw = (current.yaw + dx * 0.12 + 360) % 360;
       const pitch = Math.max(-90, Math.min(90, current.pitch + dy * 0.12));
       poseTarget = { eye: current.eye.slice(), yaw, pitch };
+      if (pose) {
+        pose.yaw = yaw;
+        pose.pitch = pitch;
+      }
       return { yaw, pitch };
     },
     look() {
       const current = poseTarget || pose;
       return current ? { yaw: current.yaw, pitch: current.pitch } : null;
     },
+    setControlActive(active) { controlActive = !!active; },
     isOn() { return botId !== null; },
     renderer() { return rendererMode; },
     setRenderer(mode) {

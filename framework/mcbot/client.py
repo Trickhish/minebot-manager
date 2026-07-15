@@ -89,6 +89,8 @@ class Client:
         self._position_stop = threading.Event()
         self._position_interval = 0.5  # heartbeat while idle (server-side anti-AFK)
         self._control_until = 0.0
+        self._control_velocity_y = 0.0
+        self._control_jump_held = False
 
         # -- world state --------------------------------------------------
         # None when this version's chunk format or block table isn't supported.
@@ -457,26 +459,30 @@ class Client:
             return
         with self._position_lock:
             x, y, z = self.position["x"], self.position["y"], self.position["z"]
+        new_y = self._ground_level_at(x, y, z)
+        if new_y is None:
+            return
+        with self._position_lock:
+            if abs(self.position["y"] - new_y) > 0.001:
+                self.position["y"] = new_y
+                self.position["on_ground"] = True
+
+    def _ground_level_at(self, x, y, z):
+        """Top surface of the nearest loaded non-air block below ``y``."""
+        if self.world is None:
+            return None
         foot_x, foot_z = int(math.floor(x)), int(math.floor(z))
         foot_y = int(math.floor(y))
         # Scan down from current foot Y, limited to 32 blocks so a bot
         # mid-air over an unloaded chunk doesn't scan forever.
         scan_limit = max(self.world.min_y, foot_y - 32)
-        ground_y = None
         for by in range(foot_y, scan_limit - 1, -1):
             name = self.world.block_name_at(foot_x, by, foot_z)
             if name is None:
                 return  # chunk not loaded -- skip, don't guess
             if name not in ("air", "cave_air", "void_air"):
-                ground_y = by
-                break
-        if ground_y is None:
-            return
-        new_y = float(ground_y + 1)  # stand on top of the solid block
-        with self._position_lock:
-            if abs(self.position["y"] - new_y) > 0.001:
-                self.position["y"] = new_y
-                self.position["on_ground"] = True
+                return float(by + 1)
+        return None
 
     def _position_tick_loop(self):
         while not self._position_stop.wait(self._position_interval):
@@ -517,17 +523,17 @@ class Client:
         self._send_position_update()
         self.emit("move", self.get_position())
 
-    def control_step(self, forward, strafe, vertical, yaw, pitch,
+    def control_step(self, forward, strafe, jump, sneak, yaw, pitch,
                      seconds=0.05):
         """Apply one first-person control tick and report it to the server.
 
         This intentionally follows the same simple dead-reckoning model as
-        ``move_to``. Collision and gravity are left to higher-level movement
-        plugins; vertical input provides useful creative/spectator flight.
+        ``move_to``, with lightweight jump/gravity and terrain following.
         """
         forward = max(-1.0, min(1.0, float(forward)))
         strafe = max(-1.0, min(1.0, float(strafe)))
-        vertical = max(-1.0, min(1.0, float(vertical)))
+        jump = bool(jump)
+        sneak = bool(sneak)
         seconds = max(0.0, min(0.1, float(seconds)))
         length = max(1.0, math.hypot(forward, strafe))
         forward /= length
@@ -535,19 +541,53 @@ class Client:
         yaw = float(yaw) % 360.0
         pitch = max(-90.0, min(90.0, float(pitch)))
         radians = math.radians(yaw)
-        distance = self.walk_speed * seconds
+        distance = self.walk_speed * (0.3 if sneak else 1.0) * seconds
         self._control_until = _time.monotonic() + 0.2
 
         with self._position_lock:
+            old_x, old_z = self.position["x"], self.position["z"]
             self.position["x"] += (-math.sin(radians) * forward
                                    - math.cos(radians) * strafe) * distance
             self.position["z"] += (math.cos(radians) * forward
                                    - math.sin(radians) * strafe) * distance
-            self.position["y"] += vertical * distance
             self.position["yaw"] = yaw
             self.position["pitch"] = pitch
-            if vertical:
+            ground = self._ground_level_at(
+                self.position["x"], self.position["y"], self.position["z"])
+            jump_started = (jump and not self._control_jump_held
+                            and self.position["on_ground"] and ground is not None)
+            self._control_jump_held = jump
+
+            if jump_started:
+                self._control_velocity_y = 8.4
                 self.position["on_ground"] = False
+
+            if self.position["on_ground"]:
+                if ground is not None:
+                    step = ground - self.position["y"]
+                    head_block = None
+                    if step > 0.001:
+                        head_block = self.world.block_name_at(
+                            int(math.floor(self.position["x"])), int(ground),
+                            int(math.floor(self.position["z"])))
+                    if (step > 1.01
+                            or (step > 0.001 and head_block not in
+                                ("air", "cave_air", "void_air"))):
+                        self.position["x"], self.position["z"] = old_x, old_z
+                    elif step >= -0.51:
+                        self.position["y"] = ground
+                    else:
+                        self.position["on_ground"] = False
+                        self._control_velocity_y = 0.0
+            else:
+                self.position["y"] += self._control_velocity_y * seconds
+                self._control_velocity_y = (
+                    self._control_velocity_y - 32.0 * seconds) * 0.98
+                if (self._control_velocity_y <= 0 and ground is not None
+                        and self.position["y"] <= ground):
+                    self.position["y"] = ground
+                    self.position["on_ground"] = True
+                    self._control_velocity_y = 0.0
         self._send_position_update()
         self.emit("move", self.get_position())
 
