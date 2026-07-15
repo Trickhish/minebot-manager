@@ -35,9 +35,15 @@ const Vision = (() => {
     [[0, 0, 0.5], [1, 0, 0.5], [1, 1, 0.5], [0, 1, 0.5]],
     [[0.5, 0, 0], [0.5, 0, 1], [0.5, 1, 1], [0.5, 1, 0]],
   ];
-  // Wall torch: raise the stick and lean it away from the wall (base at z~0.08,
-  // tip out to z~0.5). Poke-out past the cube is transparent, so it's invisible.
-  const leanTorchCorner = (c) => [c[0], c[1] * 0.72 + 0.22, (c[2] - 0.5) + 0.08 + c[1] * 0.42];
+  // Wall torch: the standing torch, rigidly tilted back and seated on the wall.
+  // A rigid rotation (not a shear) keeps the texture undistorted so the flame
+  // stays exactly at the tip; poke-out past the cube is transparent.
+  const WALL_TORCH_TILT = 24 * Math.PI / 180;   // lean from vertical
+  const leanTorchCorner = (c) => {
+    const ct = Math.cos(WALL_TORCH_TILT), st = Math.sin(WALL_TORCH_TILT);
+    const y = c[1] * 0.82, z = c[2] - 0.5;      // scale height, pivot in z at centre
+    return [c[0], (y * ct - z * st) + 0.13, (y * st + z * ct) + 0.06];
+  };
   const WALL_TORCH_PLANES = TORCH_PLANES.map(p => p.map(leanTorchCorner));
   const PART_COLORS = {
     water: [0.25, 0.47, 0.9],
@@ -564,8 +570,10 @@ const Vision = (() => {
   }
 
   function emitPlane(data, wx, wy, wz, corners, entry, color, textured, shadeOverride = null, tileOverride = -1) {
+    // CULL_FACE is disabled, so one quad is already visible from both sides.
+    // (Emitting a reversed second copy would flip the UVs — upside-down on
+    // vertically-asymmetric textures like the torch.)
     emitFace(data, wx, wy, wz, corners, entry, color, "south", textured, shadeOverride, tileOverride);
-    emitFace(data, wx, wy, wz, [corners[3], corners[2], corners[1], corners[0]], entry, color, "north", textured, shadeOverride, tileOverride);
   }
 
   function partBox(part) {
