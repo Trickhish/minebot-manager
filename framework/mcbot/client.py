@@ -88,6 +88,7 @@ class Client:
         self._position_thread: threading.Thread | None = None
         self._position_stop = threading.Event()
         self._position_interval = 0.5  # heartbeat while idle (server-side anti-AFK)
+        self._control_until = 0.0
 
         # -- world state --------------------------------------------------
         # None when this version's chunk format or block table isn't supported.
@@ -450,7 +451,9 @@ class Client:
         or when the world is unavailable.  This is simple floor-snapping,
         not full physics -- but it is enough to satisfy the vanilla server's
         anti-float check while the bot is standing still."""
-        if self.world is None:
+        if (self.world is None
+                or self.gamemode in ("creative", "spectator")
+                or _time.monotonic() < self._control_until):
             return
         with self._position_lock:
             x, y, z = self.position["x"], self.position["y"], self.position["z"]
@@ -511,6 +514,40 @@ class Client:
             self.position["pitch"] = max(-90.0, min(90.0, float(pitch)))
             if on_ground is not None:
                 self.position["on_ground"] = on_ground
+        self._send_position_update()
+        self.emit("move", self.get_position())
+
+    def control_step(self, forward, strafe, vertical, yaw, pitch,
+                     seconds=0.05):
+        """Apply one first-person control tick and report it to the server.
+
+        This intentionally follows the same simple dead-reckoning model as
+        ``move_to``. Collision and gravity are left to higher-level movement
+        plugins; vertical input provides useful creative/spectator flight.
+        """
+        forward = max(-1.0, min(1.0, float(forward)))
+        strafe = max(-1.0, min(1.0, float(strafe)))
+        vertical = max(-1.0, min(1.0, float(vertical)))
+        seconds = max(0.0, min(0.1, float(seconds)))
+        length = max(1.0, math.hypot(forward, strafe))
+        forward /= length
+        strafe /= length
+        yaw = float(yaw) % 360.0
+        pitch = max(-90.0, min(90.0, float(pitch)))
+        radians = math.radians(yaw)
+        distance = self.walk_speed * seconds
+        self._control_until = _time.monotonic() + 0.2
+
+        with self._position_lock:
+            self.position["x"] += (-math.sin(radians) * forward
+                                   - math.cos(radians) * strafe) * distance
+            self.position["z"] += (math.cos(radians) * forward
+                                   - math.sin(radians) * strafe) * distance
+            self.position["y"] += vertical * distance
+            self.position["yaw"] = yaw
+            self.position["pitch"] = pitch
+            if vertical:
+                self.position["on_ground"] = False
         self._send_position_update()
         self.emit("move", self.get_position())
 

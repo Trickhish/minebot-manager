@@ -68,6 +68,7 @@ function renderBotList() {
 
 // -- detail + websocket -----------------------------------------------------
 function selectBot(id) {
+  stopVisionControl();
   if (state.ws) { state.ws.close(); state.ws = null; }
   stopMap();
   Vision.detach();
@@ -117,7 +118,10 @@ function openSocket(id) {
       onLiveEvent(msg);
     }
   };
-  ws.onclose = () => { if (state.selected === id) logSystem("— connection closed —"); };
+  ws.onclose = () => {
+    stopVisionControl();
+    if (state.selected === id) logSystem("— connection closed —");
+  };
 }
 
 function onLiveEvent(ev) {
@@ -453,6 +457,7 @@ function openVisionModal() {
 }
 function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
+  stopVisionControl();
   $("#vision-modal").hidden = true;
   $(".vision-view").insertBefore(Vision.element(), $("#vision-status"));
   Vision.setRefreshInterval(VISION_SMALL_REFRESH_MS);
@@ -466,6 +471,110 @@ $("#vision-modal").addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeVisionModal();
 });
+
+// Pointer-lock first-person controls. The socket carries state snapshots at
+// Minecraft's 20 Hz tick rate; the host times out stale input independently.
+const visionControl = { active: false, keys: new Set(), timer: null };
+const CONTROL_KEYS = new Set([
+  "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
+]);
+
+function controlAxis(positive, negative) {
+  return (visionControl.keys.has(positive) ? 1 : 0)
+    - (visionControl.keys.has(negative) ? 1 : 0);
+}
+
+function sendVisionControl(active = visionControl.active) {
+  const look = Vision.look();
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN || (active && !look)) return;
+  state.ws.send(JSON.stringify({
+    type: "control",
+    data: {
+      active,
+      forward: active ? controlAxis("KeyW", "KeyS") : 0,
+      strafe: active ? controlAxis("KeyD", "KeyA") : 0,
+      vertical: active ? (visionControl.keys.has("Space") ? 1 : 0)
+        - (visionControl.keys.has("ShiftLeft") || visionControl.keys.has("ShiftRight") ? 1 : 0) : 0,
+      yaw: look?.yaw ?? 0,
+      pitch: look?.pitch ?? 0,
+    },
+  }));
+}
+
+function setControlUi(active) {
+  const button = $("#vision-control");
+  button.classList.toggle("active", active);
+  button.textContent = active ? "Stop" : "Control";
+  $("#vision-crosshair").hidden = !active;
+}
+
+function startVisionControl() {
+  if (!state.selected || visionControl.active) return;
+  if (Vision.renderer() !== "custom") {
+    Vision.setRenderer("custom");
+    $("#vision-renderer").value = "custom";
+  }
+  openVisionModal();
+  const target = Vision.element();
+  visionControl.active = true;
+  visionControl.keys.clear();
+  setControlUi(true);
+  sendVisionControl();
+  visionControl.timer = setInterval(sendVisionControl, 50);
+  if (!target.requestPointerLock) {
+    stopVisionControl();
+    return;
+  }
+  try {
+    const lock = target.requestPointerLock();
+    if (lock && typeof lock.catch === "function") lock.catch(stopVisionControl);
+  } catch {
+    stopVisionControl();
+  }
+}
+
+function stopVisionControl() {
+  if (!visionControl.active) return;
+  sendVisionControl(false);
+  visionControl.active = false;
+  visionControl.keys.clear();
+  clearInterval(visionControl.timer);
+  visionControl.timer = null;
+  setControlUi(false);
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+
+$("#vision-control").addEventListener("click", () => {
+  if (visionControl.active) stopVisionControl();
+  else startVisionControl();
+});
+document.addEventListener("pointerlockchange", () => {
+  if (visionControl.active && document.pointerLockElement !== Vision.element())
+    stopVisionControl();
+});
+document.addEventListener("mousemove", (e) => {
+  if (!visionControl.active || document.pointerLockElement !== Vision.element()) return;
+  Vision.adjustLook(e.movementX, e.movementY);
+});
+document.addEventListener("keydown", (e) => {
+  if (!visionControl.active) return;
+  if (e.key === "Escape") {
+    stopVisionControl();
+    return;
+  }
+  if (CONTROL_KEYS.has(e.code)) {
+    e.preventDefault();
+    visionControl.keys.add(e.code);
+    sendVisionControl();
+  }
+});
+document.addEventListener("keyup", (e) => {
+  if (!visionControl.active || !CONTROL_KEYS.has(e.code)) return;
+  e.preventDefault();
+  visionControl.keys.delete(e.code);
+  sendVisionControl();
+});
+window.addEventListener("blur", stopVisionControl);
 
 function openInventoryModal() {
   $("#inventory-modal").hidden = false;

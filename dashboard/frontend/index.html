@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260714-inventory-modal">
+  <link rel="stylesheet" href="style.css?v=20260715-first-person-control">
 </head>
 <body>
   <header>
@@ -123,6 +123,7 @@
                     <option value="prismarine">Prismarine</option>
                   </select>
                 </label>
+                <button id="vision-control" class="mini" title="First-person control (WASD, mouse, Space/Shift, Escape to exit)">Control</button>
                 <button id="vision-expand" class="mini" title="Expand to full screen">⛶</button>
               </div>
               <div class="vision-view">
@@ -207,7 +208,9 @@
         <h2>Bot vision</h2>
         <button class="modal-close" id="vision-modal-close">✕</button>
       </div>
-      <div class="vision-stage" id="vision-stage"></div>
+      <div class="vision-stage" id="vision-stage">
+        <div class="vision-crosshair" id="vision-crosshair" hidden></div>
+      </div>
     </div>
   </div>
 
@@ -225,7 +228,7 @@
     </div>
   </div>
 
-  <script src="vision.js?v=20260715-live-movement"></script>
-  <script src="app.js?v=20260714-inventory-modal"></script>
+  <script src="vision.js?v=20260715-first-person-control"></script>
+  <script src="app.js?v=20260715-first-person-control"></script>
 </body>
 </html>

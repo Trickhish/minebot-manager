@@ -288,7 +288,26 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
   display: none;
 }
 .vision-modal-box { width: 96vw; height: 94vh; }
-.vision-stage { flex: 1; min-height: 0; background: #0a0d11; display: flex; }
+.vision-stage { position: relative; flex: 1; min-height: 0; background: #0a0d11; display: flex; }
+.vision-crosshair {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  filter: drop-shadow(0 1px 1px #000);
+}
+.vision-crosshair::before, .vision-crosshair::after {
+  content: "";
+  position: absolute;
+  background: rgba(255, 255, 255, .9);
+}
+.vision-crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+.vision-crosshair::after { left: 0; top: 8px; width: 18px; height: 2px; }
+#vision-control.active { background: #b23b32; border-color: #d85a50; color: #fff; }
 
 /* -- inventory ----------------------------------------------------------- */
 .inventory-modal-box { width: min(460px, 94vw); height: auto; max-height: 90vh; }

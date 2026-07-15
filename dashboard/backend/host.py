@@ -349,15 +349,84 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
         return
     await websocket.accept()
     queue = bot.subscribe()
-    try:
-        # Replay recent history so a late joiner has context, then go live.
+    owner = object()
+    controls = {
+        "active": False, "forward": 0.0, "strafe": 0.0, "vertical": 0.0,
+        "yaw": 0.0, "pitch": 0.0, "updated": 0.0,
+    }
+
+    async def send_events():
         await websocket.send_json({"type": "snapshot", "bot_id": bot_id,
                                    "data": {"status": bot.status(),
                                             "history": bot.history()}})
         while True:
-            event = await queue.get()
-            await websocket.send_json(event)
+            await websocket.send_json(await queue.get())
+
+    async def receive_controls():
+        while True:
+            message = await websocket.receive_json()
+            if (not isinstance(message, dict)
+                    or message.get("type") != "control"
+                    or not isinstance(message.get("data"), dict)):
+                continue
+            data = message["data"]
+            active = bool(data.get("active"))
+            if not active:
+                controls["active"] = False
+                if bot.control_owner is owner:
+                    bot.control_owner = None
+                continue
+            bot.control_owner = owner
+            controls.update(
+                active=True,
+                forward=_control_number(data.get("forward"), -1.0, 1.0),
+                strafe=_control_number(data.get("strafe"), -1.0, 1.0),
+                vertical=_control_number(data.get("vertical"), -1.0, 1.0),
+                yaw=_control_number(data.get("yaw"), -360000.0, 360000.0),
+                pitch=_control_number(data.get("pitch"), -90.0, 90.0),
+                updated=asyncio.get_running_loop().time(),
+            )
+
+    async def drive_bot():
+        loop = asyncio.get_running_loop()
+        while True:
+            await asyncio.sleep(0.05)
+            if not controls["active"] or bot.control_owner is not owner:
+                continue
+            if loop.time() - controls["updated"] > 0.5:
+                controls["active"] = False
+                if bot.control_owner is owner:
+                    bot.control_owner = None
+                continue
+            if bot.state != "play":
+                continue
+            await asyncio.to_thread(
+                bot.client.control_step,
+                controls["forward"], controls["strafe"], controls["vertical"],
+                controls["yaw"], controls["pitch"], 0.05,
+            )
+
+    tasks = [asyncio.create_task(fn()) for fn in
+             (send_events, receive_controls, drive_bot)]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     except WebSocketDisconnect:
         pass
     finally:
+        controls["active"] = False
+        if bot.control_owner is owner:
+            bot.control_owner = None
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         bot.unsubscribe(queue)
+
+
+def _control_number(value, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number:  # NaN
+        return 0.0
+    return max(low, min(high, number))

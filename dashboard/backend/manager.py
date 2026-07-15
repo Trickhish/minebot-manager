@@ -65,6 +65,7 @@ class ManagedBot:
 
         self._history: deque = deque(maxlen=HISTORY_SIZE)
         self._subscribers: set[asyncio.Queue] = set()
+        self.control_owner = None
         self._thread: Optional[threading.Thread] = None
         # Set when the user stops/removes the bot: breaks the reconnect loop
         # and wakes it out of any backoff sleep.

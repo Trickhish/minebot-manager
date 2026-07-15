@@ -856,6 +856,18 @@ const Vision = (() => {
         pitch: p.pitch != null ? p.pitch : poseTarget?.pitch ?? pose?.pitch ?? 0,
       };
     },
+    adjustLook(dx, dy) {
+      const current = poseTarget || pose;
+      if (!botId || !current) return null;
+      const yaw = (current.yaw + dx * 0.12 + 360) % 360;
+      const pitch = Math.max(-90, Math.min(90, current.pitch + dy * 0.12));
+      poseTarget = { eye: current.eye.slice(), yaw, pitch };
+      return { yaw, pitch };
+    },
+    look() {
+      const current = poseTarget || pose;
+      return current ? { yaw: current.yaw, pitch: current.pitch } : null;
+    },
     isOn() { return botId !== null; },
     renderer() { return rendererMode; },
     setRenderer(mode) {
