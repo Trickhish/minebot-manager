@@ -120,7 +120,10 @@ class ManagedBot:
     def _emit(self, type_: str, data=None) -> None:
         """Record + fan out an event. MUST run on the loop thread."""
         event = {"type": type_, "bot_id": self.id, "ts": time.time(), "data": data}
-        self._history.append(event)
+        # Movement can arrive at the Minecraft tick rate. It belongs on the
+        # live stream, but retaining it would evict useful lifecycle history.
+        if type_ != "move":
+            self._history.append(event)
         for q in list(self._subscribers):
             try:
                 q.put_nowait(event)

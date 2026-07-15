@@ -73,7 +73,7 @@ const Vision = (() => {
   let vbo, vertexCount = 0;
   let botId = null, range = 40;
   let refreshMs = DEFAULT_GEOM_REFRESH_MS;
-  let pose = null;
+  let pose = null, poseTarget = null, lastFrameTime = 0;
   let geomTimer = null, rafHandle = null, fetching = false;
   let rendererMode = localStorage.getItem("visionRenderer") || "custom";
 
@@ -653,7 +653,13 @@ const Vision = (() => {
       }
       const payload = await r.json();
       buildMesh(payload);
-      pose = { eye: payload.eye, yaw: payload.yaw, pitch: payload.pitch };
+      if (!pose) {
+        const initial = poseTarget || {
+          eye: payload.eye.slice(), yaw: payload.yaw, pitch: payload.pitch,
+        };
+        pose = { eye: initial.eye.slice(), yaw: initial.yaw, pitch: initial.pitch };
+        poseTarget = initial;
+      }
       status(`${vertexCount / 6 | 0} faces` + (atlasState === "loaded" ? " · textured" : ""));
     } catch (e) {
       status("error");
@@ -665,7 +671,7 @@ const Vision = (() => {
   async function attachPrismarine(id, r) {
     botId = id;
     if (r) range = r;
-    pose = null; vertexCount = 0;
+    pose = null; poseTarget = null; vertexCount = 0;
     showPrismarineFrame();
     clearInterval(geomTimer); geomTimer = null;
     if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
@@ -697,6 +703,10 @@ const Vision = (() => {
   function frame() {
     rafHandle = requestAnimationFrame(frame);
     if (!gl) return;
+    const now = performance.now();
+    const dt = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.1) : 0;
+    lastFrameTime = now;
+    smoothPose(dt);
     syncSize();  // keep the drawing buffer matched to the (possibly resized) canvas
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -719,6 +729,31 @@ const Vision = (() => {
   function setAttr(l, size, off) {
     gl.enableVertexAttribArray(l);
     gl.vertexAttribPointer(l, size, gl.FLOAT, false, STRIDE, off);
+  }
+
+  function smoothPose(dt) {
+    if (!pose || !poseTarget || dt <= 0) return;
+    const distance = Math.hypot(
+      poseTarget.eye[0] - pose.eye[0],
+      poseTarget.eye[1] - pose.eye[1],
+      poseTarget.eye[2] - pose.eye[2],
+    );
+    // Server teleports should be immediate; normal 20 Hz walking is smoothed.
+    if (distance > 4) {
+      pose.eye = poseTarget.eye.slice();
+      pose.yaw = poseTarget.yaw;
+      pose.pitch = poseTarget.pitch;
+      return;
+    }
+    const alpha = 1 - Math.exp(-18 * dt);
+    for (let i = 0; i < 3; i++)
+      pose.eye[i] += (poseTarget.eye[i] - pose.eye[i]) * alpha;
+    pose.yaw += angleDelta(pose.yaw, poseTarget.yaw) * alpha;
+    pose.pitch += angleDelta(pose.pitch, poseTarget.pitch) * alpha;
+  }
+
+  function angleDelta(from, to) {
+    return ((to - from + 540) % 360) - 180;
   }
 
   // -- math (column-major 4x4) ----------------------------------------------
@@ -767,7 +802,8 @@ const Vision = (() => {
       showCustomCanvas();
       botId = id;
       if (r) range = r;
-      pose = null; vertexCount = 0;
+      pose = null; poseTarget = null; vertexCount = 0;
+      lastFrameTime = 0;
       status("loading…");
       ensureAtlas(() => {
         if (botId !== id) return;
@@ -778,7 +814,8 @@ const Vision = (() => {
       if (!rafHandle) frame();
     },
     detach() {
-      botId = null; pose = null; vertexCount = 0;
+      botId = null; pose = null; poseTarget = null; vertexCount = 0;
+      lastFrameTime = 0;
       clearInterval(geomTimer); geomTimer = null;
       if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
       if (gl) gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -812,10 +849,12 @@ const Vision = (() => {
     },
     resize() { syncSize(); },
     setPose(p) {
-      if (!botId || !pose || p == null || p.x == null) return;
-      pose.eye = [p.x, p.y + 1.62, p.z];
-      if (p.yaw != null) pose.yaw = p.yaw;
-      if (p.pitch != null) pose.pitch = p.pitch;
+      if (!botId || p == null || p.x == null) return;
+      poseTarget = {
+        eye: [p.x, p.y + 1.62, p.z],
+        yaw: p.yaw != null ? p.yaw : poseTarget?.yaw ?? pose?.yaw ?? 0,
+        pitch: p.pitch != null ? p.pitch : poseTarget?.pitch ?? pose?.pitch ?? 0,
+      };
     },
     isOn() { return botId !== null; },
     renderer() { return rendererMode; },

@@ -512,6 +512,7 @@ class Client:
             if on_ground is not None:
                 self.position["on_ground"] = on_ground
         self._send_position_update()
+        self.emit("move", self.get_position())
 
     def move_to(self, x, y, z, speed=None):
         """Walk in a straight line to (x, y, z), blocking the calling thread.
@@ -541,6 +542,7 @@ class Client:
                 self.position["y"] = start[1] + dy * t
                 self.position["z"] = start[2] + dz * t
             self._send_position_update()
+            self.emit("move", self.get_position())
             _time.sleep(tick)
 
     def _apply_multi_block_change(self, params):
