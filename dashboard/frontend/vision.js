@@ -479,7 +479,7 @@ const Vision = (() => {
           [[0.6875, 0.8125, 0.015], [0.75, 1, 0.0775]],
           { box: [[0.2, 0.52, 0.065], [0.8, 0.57, 0.085]], color: PART_COLORS.signText, shade: 1 },
         ],
-      }, turnsForFacing(facing4(stateOffset, true))),
+      }, turnsForFacing(facing4(stateOffset, true)) + 2),
     };
     if (name.endsWith("_wall_sign")) return {
       ...rotateShapeY({
@@ -488,7 +488,9 @@ const Vision = (() => {
           [[0.0625, 0.25, 0], [0.9375, 0.75, 0.0625]],
           { box: [[0.2, 0.46, 0.065], [0.8, 0.51, 0.085]], color: PART_COLORS.signText, shade: 1 },
         ],
-      }, turnsForFacing(facing4(stateOffset, true))),
+        // Base board sits on the -z face (faces +z); +2 turns seats it against
+        // the support wall for the actual facing instead of the opposite face.
+      }, turnsForFacing(facing4(stateOffset, true)) + 2),
     };
     if (name.endsWith("_sign") || name.endsWith("_hanging_sign")) return {
       ...rotateShapeY({
