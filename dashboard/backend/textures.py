@@ -25,6 +25,10 @@ from mcbot.png import decode_png, encode_png
 
 TILE = 16
 
+# Atlas on-disk format tag; bump to invalidate cached atlas.png/atlas_meta.json
+# when the pixel format changes (e.g. RGB -> RGBA cutout).
+_ATLAS_FORMAT = "rgba1"
+
 # "Shape" blocks share their material's texture (a slab/stairs/fence of oak
 # uses oak_planks, a cobblestone_wall uses cobblestone, ...). Strip one of these
 # to recover the material name, then resolve the material to a real texture stem.
@@ -93,9 +97,10 @@ class TextureAtlas:
     def _build_or_load(self) -> None:
         if os.path.exists(self.png_path) and os.path.exists(self._meta_path):
             meta = json.load(open(self._meta_path, encoding="utf-8"))
-            self.stem_to_tile = meta["stems"]
-            self.cols, self.rows = meta["cols"], meta["rows"]
-            return
+            if meta.get("format") == _ATLAS_FORMAT:
+                self.stem_to_tile = meta["stems"]
+                self.cols, self.rows = meta["cols"], meta["rows"]
+                return
         self._build()
 
     def _build(self) -> None:
@@ -105,7 +110,7 @@ class TextureAtlas:
                        if "/textures/block/" in arc)
         cols = int(math.ceil(math.sqrt(len(stems)))) or 1
         atlas_rows = int(math.ceil(len(stems) / cols))
-        atlas = np.zeros((atlas_rows * TILE, cols * TILE, 3), np.uint8)
+        atlas = np.zeros((atlas_rows * TILE, cols * TILE, 4), np.uint8)
 
         tile = 0
         for stem in stems:
@@ -114,8 +119,9 @@ class TextureAtlas:
                 continue
             tint = _tint_for(stem)
             if tint is not None:
-                frame = np.clip(frame.astype(np.float32)
-                                * (np.array(tint, np.float32) / 255.0), 0, 255).astype(np.uint8)
+                rgb = np.clip(frame[:, :, :3].astype(np.float32)
+                              * (np.array(tint, np.float32) / 255.0), 0, 255)
+                frame = np.dstack([rgb.astype(np.uint8), frame[:, :, 3]])
             r, c = tile // cols, tile % cols
             atlas[r * TILE:(r + 1) * TILE, c * TILE:(c + 1) * TILE] = frame
             self.stem_to_tile[stem] = tile
@@ -125,11 +131,13 @@ class TextureAtlas:
         with open(self.png_path, "wb") as fh:
             fh.write(encode_png(atlas))
         with open(self._meta_path, "w", encoding="utf-8") as fh:
-            json.dump({"stems": self.stem_to_tile, "cols": cols, "rows": atlas_rows}, fh)
+            json.dump({"stems": self.stem_to_tile, "cols": cols,
+                       "rows": atlas_rows, "format": _ATLAS_FORMAT}, fh)
 
     def _decode_tile(self, stem: str, np):
-        """A 16x16x3 uint8 RGB tile for a texture stem (first frame, alpha
-        flattened onto the texture's own average color), or None."""
+        """A 16x16x4 uint8 RGBA tile for a texture stem (first frame), or None.
+        Alpha is preserved so the WebGL shader can cut out transparent pixels
+        (torches, rails, plants); fully opaque textures get alpha 255."""
         try:
             w, h, bpp, px = decode_png(self.pack._read(self.index[stem]))
         except Exception:  # noqa: BLE001 - skip anything that won't decode
@@ -137,16 +145,10 @@ class TextureAtlas:
         if w < TILE or h < TILE:
             return None
         img = np.frombuffer(px, np.uint8).reshape(h, w, bpp)[:TILE, :TILE]
-        rgb = img[:, :, :3].astype(np.float32)
-        if bpp == 4:
-            alpha = img[:, :, 3:4].astype(np.float32) / 255.0
-            opaque = img[:, :, 3] >= 16
-            if opaque.any():
-                avg = img[:, :, :3][opaque].mean(axis=0)
-            else:
-                avg = np.array([128, 128, 128], np.float32)
-            rgb = rgb * alpha + avg * (1.0 - alpha)
-        return np.clip(rgb, 0, 255).astype(np.uint8)
+        rgba = np.empty((TILE, TILE, 4), np.uint8)
+        rgba[:, :, :3] = img[:, :, :3]
+        rgba[:, :, 3] = img[:, :, 3] if bpp == 4 else 255
+        return rgba
 
     # -- lookup -------------------------------------------------------------
     def _stem_candidates(self, name: str):
@@ -159,6 +161,10 @@ class TextureAtlas:
                 order.append(s)
 
         add(_SPECIAL_NAMES.get(name, name))
+        # Wall torches have no texture of their own -- they reuse the standing
+        # torch texture (wall_torch -> torch, soul_wall_torch -> soul_torch).
+        if name == "wall_torch" or name.endswith("_wall_torch"):
+            add(name.replace("wall_torch", "torch"))
         # Resolve the name and any texture-preserving-prefix-stripped form.
         bases = [name]
         for pfx in _TRANSPARENT_PREFIXES:

@@ -28,6 +28,17 @@ const Vision = (() => {
     [[0.15, 0, 0.15], [0.85, 0, 0.85], [0.85, 1, 0.85], [0.15, 1, 0.15]],
     [[0.85, 0, 0.15], [0.15, 0, 0.85], [0.15, 1, 0.85], [0.85, 1, 0.15]],
   ];
+  // Axis-aligned crossed planes (a '+' from above); the real torch texture is a
+  // thin central stick, so only its centre column is opaque -- the wide plane is
+  // cut out by alpha. Corner order is [bl, br, tr, tl] to match tileUV.
+  const TORCH_PLANES = [
+    [[0, 0, 0.5], [1, 0, 0.5], [1, 1, 0.5], [0, 1, 0.5]],
+    [[0.5, 0, 0], [0.5, 0, 1], [0.5, 1, 1], [0.5, 1, 0]],
+  ];
+  // Wall torch: raise the stick and lean it away from the wall (base at z~0.08,
+  // tip out to z~0.5). Poke-out past the cube is transparent, so it's invisible.
+  const leanTorchCorner = (c) => [c[0], c[1] * 0.72 + 0.22, (c[2] - 0.5) + 0.08 + c[1] * 0.42];
+  const WALL_TORCH_PLANES = TORCH_PLANES.map(p => p.map(leanTorchCorner));
   const PART_COLORS = {
     water: [0.25, 0.47, 0.9],
     lava: [1.0, 0.38, 0.08],
@@ -62,7 +73,7 @@ const Vision = (() => {
 
   // texture atlas (loaded once, shared across bots)
   let atlasState = "init";   // init | loading | loaded | none
-  let atlasTex = null, atlasCols = 0, atlasRows = 0, atlasTile = 16;
+  let atlasTex = null, atlasCols = 0, atlasRows = 0, atlasTile = 16, atlasStems = {};
   let atlasWaiters = [];
 
   function status(msg) {
@@ -130,7 +141,14 @@ const Vision = (() => {
       varying vec3 vColor; varying vec2 vUV; varying float vShade, vTex, vDist;
       uniform vec3 uFog; uniform float uFogFar; uniform sampler2D uAtlas;
       void main() {
-        vec3 base = vTex > 0.5 ? texture2D(uAtlas, vUV).rgb : vColor;
+        vec3 base;
+        if (vTex > 0.5) {
+          vec4 tx = texture2D(uAtlas, vUV);
+          if (tx.a < 0.5) discard;   // cut out transparent pixels (torches, plants, rails)
+          base = tx.rgb;
+        } else {
+          base = vColor;
+        }
         float f = clamp((vDist - uFogFar * 0.4) / (uFogFar * 0.6), 0.0, 1.0);
         gl_FragColor = vec4(mix(base * vShade, uFog, f), 1.0);
       }`;
@@ -170,11 +188,12 @@ const Vision = (() => {
     fetch("api/textures/atlas.json").then(r => r.json()).then(meta => {
       if (!meta.has_textures) return done("none");
       atlasCols = meta.cols; atlasRows = meta.rows; atlasTile = meta.tile;
+      atlasStems = meta.stems || {};
       const img = new Image();
       img.onload = () => {
         atlasTex = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, atlasTex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -216,7 +235,7 @@ const Vision = (() => {
   function usesFlatColor(name) {
     return name === "water" || name === "lava"
       || name === "hopper"
-      || name === "torch" || name.endsWith("_torch")
+      || name === "torch" || name.endsWith("_torch")   // real texture applied via torchParts
       || name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest")
       || name.endsWith("_sign") || name.endsWith("_hanging_sign");
   }
@@ -275,6 +294,24 @@ const Vision = (() => {
 
   function isWallTorch(name) {
     return name === "wall_torch" || name.endsWith("_wall_torch");
+  }
+
+  // Atlas tile for a torch's real texture (all wall/standing variants share it),
+  // or -1 if textures aren't loaded (renderer falls back to a flat color).
+  function torchTile(name) {
+    if (atlasState !== "loaded") return -1;
+    const stem = name.includes("soul") ? "soul_torch"
+      : name.includes("redstone") ? "redstone_torch" : "torch";
+    const t = atlasStems[stem];
+    return typeof t === "number" ? t : -1;
+  }
+
+  // Crossed planes carrying the torch texture (or a flat color fallback).
+  function torchParts(planes, name) {
+    const t = torchTile(name);
+    return planes.map(p => t >= 0
+      ? { plane: p, tile: t, shade: 1 }
+      : { plane: p, color: PART_COLORS.torchFlame, shade: 1 });
   }
 
   function stairShape(offset) {
@@ -358,25 +395,11 @@ const Vision = (() => {
         [[0.4375, 0.4375, 0.4375], [0.5, 0.625, 0.5]],
       ],
     };
-    if (name === "torch" || (name.endsWith("_torch") && !isWallTorch(name))) return {
-      opaque: false,
-      boxes: [
-        { box: [[0.4375, 0, 0.4375], [0.5625, 0.72, 0.5625]], color: PART_COLORS.torchWood },
-        { box: [[0.36, 0.68, 0.36], [0.64, 0.92, 0.64]], color: name.includes("soul") ? PART_COLORS.soulFlame : name.includes("redstone") ? PART_COLORS.redstoneFlame : PART_COLORS.torchFlame, shade: 1 },
-      ],
-    };
-    if (isWallTorch(name)) return {
-      ...rotateShapeY({
-        opaque: false,
-        boxes: [
-          { box: [[0.36, 0.66, 0.235], [0.64, 0.9, 0.5]], color: name.includes("soul") ? PART_COLORS.soulFlame : name.includes("redstone") ? PART_COLORS.redstoneFlame : PART_COLORS.torchFlame, shade: 1 },
-        ],
-        planes: [
-          { plane: [[0.43, 0.08, 0.02], [0.57, 0.08, 0.16], [0.57, 0.72, 0.42], [0.43, 0.72, 0.28]], color: PART_COLORS.torchWood },
-          { plane: [[0.57, 0.08, 0.02], [0.43, 0.08, 0.16], [0.43, 0.72, 0.42], [0.57, 0.72, 0.28]], color: PART_COLORS.torchWood },
-        ],
-      }, turnsForFacing(wallTorchFacing(name, stateOffset)) + 2),
-    };
+    if (name === "torch" || (name.endsWith("_torch") && !isWallTorch(name)))
+      return { opaque: false, planes: torchParts(TORCH_PLANES, name) };
+    if (isWallTorch(name)) return rotateShapeY(
+      { opaque: false, planes: torchParts(WALL_TORCH_PLANES, name) },
+      turnsForFacing(wallTorchFacing(name, stateOffset)) + 2);
     if (name === "lantern" || name === "soul_lantern" || name.endsWith("_copper_lantern")) return {
       opaque: false,
       boxes: [
@@ -516,8 +539,8 @@ const Vision = (() => {
     return tile >= 0 ? tileUV(tile) : null;
   }
 
-  function emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured, shadeOverride = null) {
-    const uv = faceTileUV(entry, faceName, textured);
+  function emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured, shadeOverride = null, tileOverride = -1) {
+    const uv = tileOverride >= 0 ? tileUV(tileOverride) : faceTileUV(entry, faceName, textured);
     const tex = uv ? 1 : 0;
     const shade = shadeOverride == null ? (FACE_SHADE[faceName] || 0.8) : shadeOverride;
     for (const k of TRI) {
@@ -526,7 +549,7 @@ const Vision = (() => {
     }
   }
 
-  function emitBox(data, wx, wy, wz, min, max, entry, color, textured, occlude, shadeOverride = null) {
+  function emitBox(data, wx, wy, wz, min, max, entry, color, textured, occlude, shadeOverride = null, tileOverride = -1) {
     const boxFaces = [
       ["top", [[min[0], max[1], min[2]], [min[0], max[1], max[2]], [max[0], max[1], max[2]], [max[0], max[1], min[2]]], [0, 1, 0]],
       ["bottom", [[min[0], min[1], max[2]], [min[0], min[1], min[2]], [max[0], min[1], min[2]], [max[0], min[1], max[2]]], [0, -1, 0]],
@@ -537,13 +560,13 @@ const Vision = (() => {
     ];
     for (const [faceName, corners, d] of boxFaces) {
       if (occlude && occlude(d)) continue;
-      emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured, shadeOverride);
+      emitFace(data, wx, wy, wz, corners, entry, color, faceName, textured, shadeOverride, tileOverride);
     }
   }
 
-  function emitPlane(data, wx, wy, wz, corners, entry, color, textured, shadeOverride = null) {
-    emitFace(data, wx, wy, wz, corners, entry, color, "south", textured, shadeOverride);
-    emitFace(data, wx, wy, wz, [corners[3], corners[2], corners[1], corners[0]], entry, color, "north", textured, shadeOverride);
+  function emitPlane(data, wx, wy, wz, corners, entry, color, textured, shadeOverride = null, tileOverride = -1) {
+    emitFace(data, wx, wy, wz, corners, entry, color, "south", textured, shadeOverride, tileOverride);
+    emitFace(data, wx, wy, wz, [corners[3], corners[2], corners[1], corners[0]], entry, color, "north", textured, shadeOverride, tileOverride);
   }
 
   function partBox(part) {
@@ -592,13 +615,15 @@ const Vision = (() => {
           }
           for (const rawBox of shape.boxes || []) {
             const part = partBox(rawBox);
+            const tile = typeof part.tile === "number" ? part.tile : -1;
             emitBox(data, wx, wy, wz, part.box[0], part.box[1], meta.entry,
-              part.color || meta.color, part.color ? false : textured, null, part.shade);
+              part.color || meta.color, part.color ? false : textured, null, part.shade, tile);
           }
           for (const rawPlane of shape.planes || []) {
             const part = partPlane(rawPlane);
+            const tile = typeof part.tile === "number" ? part.tile : -1;
             emitPlane(data, wx, wy, wz, part.plane, meta.entry,
-              part.color || meta.color, part.color ? false : textured, part.shade);
+              part.color || meta.color, part.color ? false : textured, part.shade, tile);
           }
         }
 

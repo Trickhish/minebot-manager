@@ -179,7 +179,8 @@ async def atlas_meta():
     """Atlas grid geometry for the client's UV math, or has_textures=false."""
     if atlas is None:
         return {"has_textures": False}
-    return {"has_textures": True, "tile": TILE, "cols": atlas.cols, "rows": atlas.rows}
+    return {"has_textures": True, "tile": TILE, "cols": atlas.cols,
+            "rows": atlas.rows, "stems": atlas.stem_to_tile}
 
 
 @app.get("/api/textures/atlas.png")

@@ -23,9 +23,12 @@ _CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
 
 
 def encode_png(rgb) -> bytes:
-    """8-bit truecolor PNG, no compression filtering. `rgb` is a
-    (H, W, 3) uint8 array-like (numpy array or nested lists)."""
+    """8-bit PNG, no compression filtering. `rgb` is a (H, W, C) uint8
+    array-like (numpy array or nested lists) with C=3 (truecolor) or
+    C=4 (truecolor+alpha)."""
     height, width = len(rgb), len(rgb[0])
+    channels = rgb.shape[2] if hasattr(rgb, "shape") else len(rgb[0][0])
+    color_type = 6 if channels == 4 else 2
     raw = bytearray()
     if hasattr(rgb, "tobytes"):  # numpy array: encode each row in one shot
         for row in rgb:
@@ -41,7 +44,7 @@ def encode_png(rgb) -> bytes:
         return struct.pack(">I", len(data)) + tag + data + \
             struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
     return _SIGNATURE + chunk(b"IHDR", ihdr) + chunk(b"IDAT", compressed) + chunk(b"IEND", b"")
 
 
