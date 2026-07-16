@@ -69,6 +69,7 @@ function renderBotList() {
 // -- detail + websocket -----------------------------------------------------
 function selectBot(id) {
   stopVisionControl();
+  resetVisionTools();
   if (state.ws) { state.ws.close(); state.ws = null; }
   stopMap();
   Vision.detach();
@@ -458,6 +459,8 @@ function openVisionModal() {
 function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
   stopVisionControl();
+  stopFreecam();
+  $("#vision-tools").hidden = true;
   $("#vision-modal").hidden = true;
   $(".vision-view").insertBefore(Vision.element(), $("#vision-status"));
   Vision.setRefreshInterval(VISION_SMALL_REFRESH_MS);
@@ -510,6 +513,7 @@ function setControlUi(active) {
 
 function startVisionControl() {
   if (!state.selected || visionControl.active) return;
+  stopFreecam();
   if (Vision.renderer() !== "custom") {
     Vision.setRenderer("custom");
     $("#vision-renderer").value = "custom";
@@ -577,6 +581,98 @@ document.addEventListener("keyup", (e) => {
   sendVisionControl();
 });
 window.addEventListener("blur", stopVisionControl);
+
+// -- vision tools (freecam / xray / chest highlight) ------------------------
+// Ctrl+Space toggles a small overlay of rendering tools inside the expanded
+// vision view. Freecam is a browser-only fly camera (never drives the bot).
+const freecam = { active: false };
+const FREECAM_KEYS = new Set([
+  "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
+]);
+
+function toggleVisionTools() {
+  if (!state.selected) return;
+  if (Vision.renderer() !== "custom") {
+    Vision.setRenderer("custom");
+    $("#vision-renderer").value = "custom";
+  }
+  const panel = $("#vision-tools");
+  if (panel.hidden) {
+    openVisionModal();
+    panel.hidden = false;
+  } else {
+    panel.hidden = true;
+  }
+}
+
+function startFreecam() {
+  if (freecam.active) return;
+  if (visionControl.active) stopVisionControl();
+  freecam.active = true;
+  Vision.setTool("freecam", true);
+  $("#tool-freecam").checked = true;
+  $("#vision-crosshair").hidden = false;
+  const target = Vision.element();
+  try {
+    if (target.requestPointerLock) target.requestPointerLock();
+  } catch { /* pointer lock is optional; drag-look still works */ }
+}
+
+function stopFreecam() {
+  if (!freecam.active) return;
+  freecam.active = false;
+  Vision.setTool("freecam", false);
+  FREECAM_KEYS.forEach(k => Vision.setFreecamKey(k, false));
+  $("#tool-freecam").checked = false;
+  if (!visionControl.active) $("#vision-crosshair").hidden = true;
+  if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
+}
+
+function resetVisionTools() {
+  stopFreecam();
+  $("#vision-tools").hidden = true;
+  for (const id of ["tool-xray", "tool-chests"]) $("#" + id).checked = false;
+  Vision.setTool("xray", false);
+  Vision.setTool("chests", false);
+}
+
+$("#tool-xray").addEventListener("change", (e) => Vision.setTool("xray", e.target.checked));
+$("#tool-chests").addEventListener("change", (e) => Vision.setTool("chests", e.target.checked));
+$("#tool-freecam").addEventListener("change", (e) => {
+  // Drop focus so Space (freecam "up") doesn't re-toggle the checkbox.
+  e.target.blur();
+  if (e.target.checked) startFreecam(); else stopFreecam();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && e.code === "Space") {
+    e.preventDefault();
+    toggleVisionTools();
+    return;
+  }
+  if (freecam.active && FREECAM_KEYS.has(e.code)) {
+    e.preventDefault();
+    Vision.setFreecamKey(e.code, true);
+  }
+});
+document.addEventListener("keyup", (e) => {
+  if (freecam.active && FREECAM_KEYS.has(e.code)) {
+    e.preventDefault();
+    Vision.setFreecamKey(e.code, false);
+  }
+});
+document.addEventListener("mousemove", (e) => {
+  if (!freecam.active) return;
+  // Freecam looks on pointer-lock movement, or click-drag when not locked.
+  if (document.pointerLockElement === Vision.element()) {
+    Vision.adjustLook(e.movementX, e.movementY);
+  } else if (e.buttons & 1) {
+    Vision.adjustLook(e.movementX, e.movementY);
+  }
+});
+window.addEventListener("blur", () => {
+  if (freecam.active) FREECAM_KEYS.forEach(k => Vision.setFreecamKey(k, false));
+});
 
 function openInventoryModal() {
   $("#inventory-modal").hidden = false;

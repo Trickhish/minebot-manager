@@ -210,6 +210,15 @@
       </div>
       <div class="vision-stage" id="vision-stage">
         <div class="vision-crosshair" id="vision-crosshair" hidden></div>
+        <div class="vision-tools" id="vision-tools" hidden>
+          <div class="vision-tools-head">Tools <span class="vt-hint">Ctrl+Space</span></div>
+          <label class="vt-row"><input type="checkbox" id="tool-freecam"> Freecam
+            <span class="vt-keys">WASD · Space/Shift · drag-look</span></label>
+          <label class="vt-row"><input type="checkbox" id="tool-xray"> X-ray
+            <span class="vt-keys">hide terrain</span></label>
+          <label class="vt-row"><input type="checkbox" id="tool-chests"> Highlight chests
+            <span class="vt-keys">through walls</span></label>
+        </div>
       </div>
     </div>
   </div>
@@ -228,7 +237,7 @@
     </div>
   </div>
 
-  <script src="vision.js?v=20260716-liquid-textures"></script>
-  <script src="app.js?v=20260715-grounded-control"></script>
+  <script src="vision.js?v=20260716-vision-tools"></script>
+  <script src="app.js?v=20260716-vision-tools"></script>
 </body>
 </html>

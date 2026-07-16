@@ -309,6 +309,47 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 .vision-crosshair::after { left: 0; top: 8px; width: 18px; height: 2px; }
 #vision-control.active { background: #b23b32; border-color: #d85a50; color: #fff; }
 
+.vision-tools {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 12px;
+  min-width: 190px;
+  padding: 10px 12px;
+  background: rgba(12, 16, 22, .86);
+  border: 1px solid #26303c;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #d7dee6;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+  user-select: none;
+}
+.vision-tools-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: #fff;
+}
+.vision-tools .vt-hint {
+  font-weight: 400;
+  font-size: 10px;
+  color: #7d8794;
+  border: 1px solid #333f4d;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.vision-tools .vt-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.vision-tools .vt-row input { margin: 0; }
+.vision-tools .vt-keys { margin-left: auto; font-size: 10px; color: #6f7a86; }
+
 /* -- inventory ----------------------------------------------------------- */
 .inventory-modal-box { width: min(460px, 94vw); height: auto; max-height: 90vh; }
 .inventory-modal-body { padding: 18px; overflow: auto; }

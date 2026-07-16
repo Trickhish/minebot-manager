@@ -68,9 +68,37 @@ const Vision = (() => {
     "wildflowers", "leaf_litter", "open_eyeblossom", "closed_eyeblossom",
   ]);
 
+  // Terrain hidden by X-ray so ores/caves/structures show through. Only common
+  // "filler" blocks -- ores and anything player-placed stay visible.
+  const XRAY_HIDDEN = new Set([
+    "stone", "cobblestone", "dirt", "grass_block", "coarse_dirt", "podzol",
+    "rooted_dirt", "mud", "muddy_mangrove_roots", "clay", "gravel", "sand",
+    "red_sand", "sandstone", "red_sandstone", "andesite", "diorite", "granite",
+    "tuff", "deepslate", "cobbled_deepslate", "netherrack", "end_stone",
+    "basalt", "smooth_basalt", "blackstone", "calcite", "dripstone_block",
+    "magma_block", "soul_sand", "soul_soil", "snow_block", "packed_ice", "ice",
+    "blue_ice", "moss_block", "mossy_cobblestone", "bedrock", "water", "lava",
+    "sculk", "grass_block_snow", "dirt_path", "farmland",
+  ]);
+  // Containers highlighted through walls by the "highlight chests" tool.
+  const HIGHLIGHT_NAMES = new Set([
+    "chest", "trapped_chest", "ender_chest", "barrel", "hopper", "dropper",
+    "dispenser", "furnace", "blast_furnace", "smoker", "brewing_stand",
+  ]);
+  const HIGHLIGHT_COLOR = [1.0, 0.82, 0.18];
+  const isHighlight = (name) => HIGHLIGHT_NAMES.has(name)
+    || name.endsWith("_shulker_box") || name === "shulker_box";
+
   let canvas, gl, prog, loc = {};
   let prismarineFrame = null;
   let vbo, vertexCount = 0;
+  let highlightVbo, highlightCount = 0;
+  let lastPayload = null;
+  // Tools: freecam (detached fly camera), xray (see-through terrain), chests
+  // (highlight containers through walls). Rebuild the mesh when xray/chests flip.
+  const tools = { freecam: false, xray: false, chests: false };
+  let freecamPose = null;
+  const freecamKeys = new Set();
   let botId = null, range = 40;
   let refreshMs = DEFAULT_GEOM_REFRESH_MS;
   let pose = null, poseTarget = null, lastFrameTime = 0;
@@ -166,6 +194,7 @@ const Vision = (() => {
     gl.uniform3fv(loc.uFog, FOG_COLOR);
     gl.uniform1i(loc.uAtlas, 0);
     vbo = gl.createBuffer();
+    highlightVbo = gl.createBuffer();
     gl.enable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
     gl.clearColor(FOG_COLOR[0], FOG_COLOR[1], FOG_COLOR[2], 1.0);
@@ -606,13 +635,18 @@ const Vision = (() => {
     }
     const at = (x, y, z) => (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz)
       ? 0 : grid[(y * nz + z) * nx + x];
+    const xray = tools.xray;
+    // Under X-ray a hidden block reads as non-solid so its neighbours (ores,
+    // structures) still draw the faces that touched it.
     const opaqueAt = (x, y, z) => {
       const idx = at(x, y, z);
-      return idx !== 0 && metas[idx].opaque;
+      return idx !== 0 && metas[idx].opaque
+        && !(xray && XRAY_HIDDEN.has(metas[idx].name));
     };
     const metas = pal.map(paletteMeta);
 
     const data = [];
+    const hdata = [];
     for (let y = 0; y < ny; y++)
       for (let z = 0; z < nz; z++)
         for (let x = 0; x < nx; x++) {
@@ -620,6 +654,9 @@ const Vision = (() => {
           if (idx === 0) continue;
           const meta = metas[idx], shape = meta.shape;
           const wx = ox + x, wy = oy + y, wz = oz + z;
+          if (tools.chests && isHighlight(meta.name))
+            emitHighlightCube(hdata, wx, wy, wz);
+          if (xray && XRAY_HIDDEN.has(meta.name)) continue;  // see-through terrain
           if (shape.opaque) {
             for (const [name, corners, d] of FACES) {
               if (opaqueAt(x + d[0], y + d[1], z + d[2])) continue;
@@ -645,6 +682,23 @@ const Vision = (() => {
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
     vertexCount = arr.length / FLOATS;
+
+    const harr = new Float32Array(hdata);
+    gl.bindBuffer(gl.ARRAY_BUFFER, highlightVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, harr, gl.DYNAMIC_DRAW);
+    highlightCount = harr.length / FLOATS;
+  }
+
+  // A solid gold cube (flat color, no texture) marking a container. Drawn later
+  // with depth-testing off so it shows through walls.
+  function emitHighlightCube(hdata, wx, wy, wz) {
+    for (const [, corners] of FACES)
+      for (const k of TRI)
+        addVertex(hdata, wx, wy, wz, corners[k], HIGHLIGHT_COLOR, [0, 0], 1, 0);
+  }
+
+  function rebuildMesh() {
+    if (lastPayload && atlasState !== "loading") buildMesh(lastPayload);
   }
 
   async function refreshGeometry() {
@@ -657,6 +711,7 @@ const Vision = (() => {
         return;
       }
       const payload = await r.json();
+      lastPayload = payload;
       buildMesh(payload);
       if (!pose) {
         const initial = poseTarget || {
@@ -711,25 +766,61 @@ const Vision = (() => {
     const now = performance.now();
     const dt = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.1) : 0;
     lastFrameTime = now;
-    smoothPose(dt);
+    if (tools.freecam && freecamPose) updateFreecam(dt);
+    else smoothPose(dt);
     syncSize();  // keep the drawing buffer matched to the (possibly resized) canvas
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if (!pose || vertexCount === 0) return;
+    const cam = tools.freecam && freecamPose ? freecamPose : pose;
+    if (!cam || vertexCount === 0) return;
 
-    const proj = perspective(70 * Math.PI / 180, canvas.width / canvas.height, 0.1, (range + 4) * 1.8);
-    const mvp = multiply(proj, viewMatrix(pose));
+    // Freecam can roam far from the bot, so give it a much longer far plane.
+    const far = (tools.freecam ? range * 3 + 32 : (range + 4) * 1.8);
+    const proj = perspective(70 * Math.PI / 180, canvas.width / canvas.height, 0.1, far);
+    const mvp = multiply(proj, viewMatrix(cam));
 
     gl.useProgram(prog);
     gl.uniformMatrix4fv(loc.uMVP, false, mvp);
-    gl.uniform3fv(loc.uEye, pose.eye);
+    gl.uniform3fv(loc.uEye, cam.eye);
     gl.uniform1f(loc.uFogFar, range);
     if (atlasTex) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, atlasTex); }
 
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    bindVertexAttrs();
+    gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
+
+    // Container highlights: drawn last with depth-testing off (see through
+    // walls) and fog pushed out of range so they read as solid gold markers.
+    if (tools.chests && highlightCount) {
+      gl.disable(gl.DEPTH_TEST);
+      gl.uniform1f(loc.uFogFar, 1e9);
+      gl.bindBuffer(gl.ARRAY_BUFFER, highlightVbo);
+      bindVertexAttrs();
+      gl.drawArrays(gl.TRIANGLES, 0, highlightCount);
+      gl.enable(gl.DEPTH_TEST);
+    }
+  }
+  function bindVertexAttrs() {
     setAttr(loc.aPos, 3, 0); setAttr(loc.aColor, 3, 12); setAttr(loc.aUV, 2, 24);
     setAttr(loc.aShade, 1, 32); setAttr(loc.aTex, 1, 36);
-    gl.drawArrays(gl.TRIANGLES, 0, vertexCount);
+  }
+
+  // Fly the detached camera from held keys (W/S along view, A/D strafe,
+  // Space/Shift world up/down). Shift-less; look is driven by adjustLook.
+  function updateFreecam(dt) {
+    const fp = freecamPose;
+    const f = forward(fp.yaw, fp.pitch);
+    const r = normalize(cross(f, [0, 1, 0]));
+    const k = (c) => freecamKeys.has(c) ? 1 : 0;
+    const fwd = k("KeyW") - k("KeyS");
+    const strafe = k("KeyD") - k("KeyA");
+    const rise = k("Space") - (k("ShiftLeft") || k("ShiftRight") ? 1 : 0);
+    const speed = 12 * dt;
+    fp.eye[0] += (f[0] * fwd + r[0] * strafe) * speed;
+    fp.eye[1] += (f[1] * fwd + rise) * speed;
+    fp.eye[2] += (f[2] * fwd + r[2] * strafe) * speed;
+    // Keep the bot camera advancing in the background so exiting freecam is smooth.
+    smoothPose(dt);
   }
   function setAttr(l, size, off) {
     gl.enableVertexAttribArray(l);
@@ -820,6 +911,8 @@ const Vision = (() => {
     },
     detach() {
       botId = null; pose = null; poseTarget = null; vertexCount = 0;
+      lastPayload = null; highlightCount = 0;
+      tools.freecam = false; freecamPose = null; freecamKeys.clear();
       lastFrameTime = 0;
       clearInterval(geomTimer); geomTimer = null;
       if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
@@ -864,6 +957,13 @@ const Vision = (() => {
       };
     },
     adjustLook(dx, dy) {
+      // In freecam, mouse-look steers the detached camera directly and never
+      // touches the bot's pose (so it isn't reported to the server).
+      if (tools.freecam && freecamPose) {
+        freecamPose.yaw = (freecamPose.yaw + dx * 0.12 + 360) % 360;
+        freecamPose.pitch = Math.max(-90, Math.min(90, freecamPose.pitch + dy * 0.12));
+        return { yaw: freecamPose.yaw, pitch: freecamPose.pitch };
+      }
       const current = poseTarget || pose;
       if (!botId || !current) return null;
       const yaw = (current.yaw + dx * 0.12 + 360) % 360;
@@ -880,6 +980,34 @@ const Vision = (() => {
       return current ? { yaw: current.yaw, pitch: current.pitch } : null;
     },
     setControlActive(active) { controlActive = !!active; },
+    // Enable/disable a tool. "freecam" detaches the camera; "xray"/"chests"
+    // change the mesh and need a rebuild.
+    setTool(name, on) {
+      on = !!on;
+      if (name === "freecam") {
+        tools.freecam = on;
+        freecamKeys.clear();
+        if (on) {
+          const src = pose || poseTarget;
+          freecamPose = src
+            ? { eye: src.eye.slice(), yaw: src.yaw, pitch: src.pitch }
+            : { eye: [0, 80, 0], yaw: 0, pitch: 0 };
+        } else {
+          freecamPose = null;
+        }
+      } else if (name === "xray") {
+        tools.xray = on;
+        rebuildMesh();
+      } else if (name === "chests") {
+        tools.chests = on;
+        rebuildMesh();
+      }
+    },
+    getTools() { return { ...tools }; },
+    setFreecamKey(code, down) {
+      if (down) freecamKeys.add(code); else freecamKeys.delete(code);
+    },
+    isFreecam() { return tools.freecam; },
     isOn() { return botId !== null; },
     renderer() { return rendererMode; },
     setRenderer(mode) {
