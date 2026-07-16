@@ -166,7 +166,7 @@ mcbot/
   buffer.py      wire primitives (VarInt, strings, floats, UUID, ...)
   nbt.py         NBT — classic (named root) and 1.20.2+ network (nameless)
   types.py       protodef interpreter: container/array/switch/option/bitfield/…
-  protocol.py    loads a vendored schema; decode/encode whole packets
+  protocol.py    schema registry; protocol-number lookup; packet codecs
   connection.py  socket + length framing + zlib compression + AES hook
   client.py      state machine, login, keep-alive, movement, world, events
   chunk.py       hand-parser for chunk section bytes (paletted containers)
@@ -311,6 +311,20 @@ examples/
 
 ## Supported versions
 
+`Client` status-pings the server with the newest local protocol, then selects
+the exact schema returned by the server. ViaVersion-style proxies can negotiate
+that probe down to another supported protocol. Callers normally do not pass a
+version:
+
+```python
+bot = Client("mc.example.org", username="Bot")
+```
+
+Protocol requirements are capability-driven: the client checks whether the
+selected schema contains configuration, player-loaded, chat, and other packets
+instead of branching on release names. Version-specific adapters should only be
+added where the same capability has genuinely different behavior.
+
 ```python
 from mcbot.protocol import available_versions
 print(available_versions())   # ['1.18.2', '1.21.11', '26.2', '1.8']
@@ -339,7 +353,8 @@ python tools/build_version_from_viaversion.py 26.2
 
 This works because a minor bump usually only reorders/inserts packets while
 keeping the layouts of the ones you actually use (keep_alive, chat, movement).
-When the server is newer than the schema, advertise its protocol number:
+Explicit schema selection remains available for protocol development and
+diagnostics:
 
 ```python
 Client(host, version="26.2")                       # 26.2 already = 776

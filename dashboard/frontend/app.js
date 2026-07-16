@@ -2,7 +2,6 @@
 
 // Thin SPA over the dashboard REST + WebSocket API. No build step.
 const api = {
-  async versions() { return (await fetch("api/versions").then(r => r.json())).versions; },
   async listBots() { return fetch("api/bots").then(r => r.json()); },
   async createBot(body) {
     const r = await fetch("api/bots", {
@@ -129,6 +128,11 @@ function onLiveEvent(ev) {
   logEvent(ev);
   const bot = state.bots.find(b => b.id === ev.bot_id);
   if (ev.type === "state" && bot) { bot.state = ev.data.state; renderBotList(); applyStatusPartial(ev.data.state, ev.data); }
+  if (ev.type === "protocol" && bot) {
+    bot.version = ev.data.version;
+    renderBotList();
+    $("#d-target").textContent = `${bot.host}:${bot.port} · ${bot.version}`;
+  }
   if ((ev.type === "spawn" || ev.type === "move") && bot) { applyPosition(ev.data); Vision.setPose(ev.data); }
   if (ev.type === "stats") { renderVitals(ev.data); if (ev.data.position) { applyPosition(ev.data.position); Vision.setPose(ev.data.position); } }
   if (ev.type === "inventory") renderInventory(ev.data);
@@ -183,6 +187,7 @@ function logEvent(ev) {
   else if (type === "auth") text = ev.data.online_mode
     ? "premium / online-mode server (Microsoft account required)"
     : `offline / cracked-mode server${ev.data.encrypted ? " (encrypted connection)" : ""}`;
+  else if (type === "protocol") text = `detected ${ev.data.server_name || ev.data.version} · protocol ${ev.data.protocol} · ${ev.data.version} schema`;
   else if (type === "ready") text = "entered play state";
   else if (type === "macro") {
     const d = ev.data;
@@ -193,7 +198,7 @@ function logEvent(ev) {
 }
 
 function tagFor(type) {
-  return { chat: "CHAT", state: "STATE", error: "ERR", auth: "AUTH", spawn: "SPAWN",
+  return { chat: "CHAT", state: "STATE", error: "ERR", auth: "AUTH", protocol: "PROTO", spawn: "SPAWN",
            disconnect: "DISC", ready: "READY", macro: "MACRO" }[type] || type.toUpperCase();
 }
 
@@ -229,18 +234,6 @@ function fmt(v) {
 }
 
 // -- forms ------------------------------------------------------------------
-async function initVersions() {
-  const sel = $("#version-select");
-  try {
-    for (const v of await api.versions()) {
-      const o = el("option", null, v);
-      o.value = v;
-      if (v === "1.18.2") o.selected = true;
-      sel.append(o);
-    }
-  } catch { sel.append(el("option", null, "1.18.2")); }
-}
-
 $("#new-bot").addEventListener("submit", async (e) => {
   e.preventDefault();
   const f = e.target;
@@ -250,7 +243,6 @@ $("#new-bot").addEventListener("submit", async (e) => {
       host: f.host.value.trim(),
       port: Number(f.port.value),
       username: f.username.value.trim(),
-      version: f.version.value,
       auto_reconnect: f.auto_reconnect.checked,
     });
     await refreshBots();
@@ -1021,6 +1013,5 @@ $("#btn-logout").addEventListener("click", async () => {
 
 // -- boot -------------------------------------------------------------------
 initUser();
-initVersions();
 refreshBots();
 setInterval(refreshBots, 4000);  // keep the list/status dots fresh

@@ -49,6 +49,32 @@ def available_versions():
     )
 
 
+def version_for_protocol(protocol_number: int) -> str | None:
+    """Return the vendored schema whose wire protocol matches exactly."""
+    for version in available_versions():
+        row = _VERSIONS_BY_NAME.get(version)
+        if row and row.get("version") == protocol_number:
+            return version
+    return None
+
+
+def latest_available_version() -> str:
+    """Return the newest vendored release by numeric protocol version."""
+    return max(
+        available_versions(),
+        key=lambda version: _VERSIONS_BY_NAME.get(version, {}).get("version", -1),
+    )
+
+
+def available_protocols() -> dict[int, str]:
+    """Numeric wire protocol to vendored schema name."""
+    return {
+        _VERSIONS_BY_NAME[version]["version"]: version
+        for version in available_versions()
+        if version in _VERSIONS_BY_NAME
+    }
+
+
 class Protocol:
     def __init__(self, version: str):
         folder = os.path.join(_DATA_DIR, version)

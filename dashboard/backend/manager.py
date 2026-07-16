@@ -21,7 +21,12 @@ import uuid
 from collections import deque
 from typing import Optional
 
-from mcbot.client import Client, Disconnected, OnlineModeRequired
+from mcbot.client import (
+    Client,
+    Disconnected,
+    OnlineModeRequired,
+    UnsupportedProtocol,
+)
 
 HISTORY_SIZE = 200
 
@@ -29,7 +34,7 @@ HISTORY_SIZE = 200
 RECONNECT_BASE_DELAY = 3.0
 RECONNECT_MAX_DELAY = 60.0
 # Outcomes that will never succeed on retry -> don't auto-reconnect.
-TERMINAL_OUTCOMES = {"online_mode_required"}
+TERMINAL_OUTCOMES = {"online_mode_required", "unsupported_protocol"}
 
 # Which client events we mirror to the dashboard, and how each maps to a
 # dashboard event `type`. Chat/state/position are the useful monitor signals
@@ -52,6 +57,7 @@ class ManagedBot:
         self.username = req.username
         self.host = req.host
         self.port = req.port
+        self.requested_version = req.version
         self.version = req.version
         self.advertise_protocol = req.advertise_protocol
         self.auto_reconnect = getattr(req, "auto_reconnect", True)
@@ -83,7 +89,7 @@ class ManagedBot:
             "host": self.host,
             "port": self.port,
             "username": self.username,
-            "version": self.version,
+            "version": self.requested_version,
             "advertise_protocol": self.advertise_protocol,
             "auto_reconnect": self.auto_reconnect,
         }
@@ -113,7 +119,8 @@ class ManagedBot:
         """
         client = Client(
             self.host, port=self.port, username=self.username,
-            version=self.version, advertise_protocol=self.advertise_protocol)
+            version=self.requested_version,
+            advertise_protocol=self.advertise_protocol)
         self.client = client
         self._register_handlers()
         return client
@@ -183,6 +190,14 @@ class ManagedBot:
         @bot.on("authentication")
         def _authentication(info):
             self._emit_threadsafe("auth", _safe(info))
+
+        @bot.on("protocol")
+        def _protocol(info):
+            def apply():
+                self.version = info["version"]
+                self.advertise_protocol = info["protocol"]
+                self._emit("protocol", _safe(info))
+            self.loop.call_soon_threadsafe(apply)
 
         @bot.on("player_state")
         def _stats(snapshot):
@@ -276,6 +291,8 @@ class ManagedBot:
             self.client.connect()  # blocks, pumping packets
         except OnlineModeRequired as exc:
             return "online_mode_required", str(exc)
+        except UnsupportedProtocol as exc:
+            return "unsupported_protocol", str(exc)
         except (Disconnected, ConnectionError, OSError) as exc:
             return "disconnected", _connection_failure_message(
                 self.client.state, exc)
@@ -393,6 +410,9 @@ class BotManager:
             if not spec:
                 continue
             try:
+                # Rosters created before automatic detection persisted the UI
+                # selection. Migrate them so restored bots detect as well.
+                spec = {**spec, "version": "auto", "advertise_protocol": None}
                 req = self._request_model(**spec) if self._request_model else _Spec(spec)
                 self.create(req, bot_id=bot_id, persist=False)
                 n += 1

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260716-auth-status">
+  <link rel="stylesheet" href="style.css?v=20260716-auto-protocol">
 </head>
 <body>
   <header>
@@ -22,12 +22,7 @@
       <form id="new-bot" class="card">
         <h2>New bot</h2>
         <label>Host <input name="host" value="mc.dury.dev" required></label>
-        <div class="row">
-          <label>Port <input name="port" type="number" value="25565" min="1" max="65535"></label>
-          <label class="grow">Version
-            <select name="version" id="version-select"></select>
-          </label>
-        </div>
+        <label>Port <input name="port" type="number" value="25565" min="1" max="65535"></label>
         <label>Username <input name="username" value="Bot" required></label>
         <label class="check"><input type="checkbox" name="auto_reconnect" checked> Auto-reconnect on drop</label>
         <button type="submit">Spawn bot</button>
@@ -249,6 +244,6 @@
   </div>
 
   <script src="vision.js?v=20260716-control-menu"></script>
-  <script src="app.js?v=20260716-auth-mode"></script>
+  <script src="app.js?v=20260716-auto-protocol"></script>
 </body>
 </html>

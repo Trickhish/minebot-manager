@@ -80,7 +80,7 @@ async def list_bots():
 
 @app.post("/api/bots")
 async def create_bot(req: CreateBotRequest):
-    if req.version not in available_versions():
+    if req.version != "auto" and req.version not in available_versions():
         raise HTTPException(400, f"unknown version {req.version!r}; "
                                  f"have {available_versions()}")
     if not (1 <= req.port <= 65535):

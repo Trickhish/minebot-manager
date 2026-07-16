@@ -10,7 +10,7 @@ transport without Microsoft authentication. If the server requests session
 authentication, we surface that clearly instead of silently failing.
 
 Usage:
-    client = Client("mc.example.com", username="Bot", version="1.18.2")
+    client = Client("mc.example.com", username="Bot")
     client.on("chat", lambda name, params, raw: print(params))
     client.connect()   # blocks, pumping packets
 """
@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import queue
 import sys
@@ -30,7 +31,12 @@ from .buffer import BufferUnderrun
 from .connection import Connection
 from .inventory import Inventory, make_slot_value
 from .items import get_item_table
-from .protocol import Protocol
+from .protocol import (
+    Protocol,
+    available_protocols,
+    latest_available_version,
+    version_for_protocol,
+)
 from .world import World
 
 # Versions whose chunk sections predate the modern (no cross-long bit packing)
@@ -132,13 +138,20 @@ class Disconnected(Exception):
     """Server closed the session or sent a disconnect packet."""
 
 
+class UnsupportedProtocol(Exception):
+    """The server protocol has no exact vendored packet schema."""
+
+
 class Client:
-    def __init__(self, host, port=25565, username="Bot", version="1.18.2",
+    def __init__(self, host, port=25565, username="Bot", version="auto",
                  advertise_protocol=None):
         self.host = host
         self.port = port
         self.username = username
-        self.protocol = Protocol(version)
+        self.requested_version = version
+        initial_version = (
+            latest_available_version() if version == "auto" else version)
+        self.protocol = Protocol(initial_version)
         # What protocol number to claim in the handshake. Defaults to the
         # schema's own number, but can be bumped to talk to a server that is
         # slightly newer than the schema we decode with.
@@ -171,9 +184,10 @@ class Client:
         # -- world state --------------------------------------------------
         # None when this version's chunk format or block table isn't supported.
         self.world: World | None = None
-        if version not in _LEGACY_CHUNK_FORMAT_VERSIONS:
+        if initial_version not in _LEGACY_CHUNK_FORMAT_VERSIONS:
             try:
-                self.world = World(get_block_table(version), self.protocol.protocol_version)
+                self.world = World(
+                    get_block_table(initial_version), self.protocol.protocol_version)
             except ValueError:
                 pass  # no block table (and no fallback) for this version
         self._world_packet_queue: queue.Queue = queue.Queue()
@@ -185,7 +199,7 @@ class Client:
 
         # -- inventory state ------------------------------------------------
         try:
-            self.inventory = Inventory(get_item_table(version))
+            self.inventory = Inventory(get_item_table(initial_version))
         except ValueError:
             self.inventory = Inventory(None)  # no item table; names stay None
 
@@ -256,6 +270,8 @@ class Client:
     # -- connect / login ---------------------------------------------------
     def connect(self):
         """Open the socket, log in, then block pumping packets until closed."""
+        if self.requested_version == "auto":
+            self._detect_server_version()
         self.conn.connect()
         # Handshake: advertise the server's own protocol number so a server
         # newer than our vendored schema still accepts us.
@@ -282,6 +298,64 @@ class Client:
         finally:
             self._world_stop.set()
             self.conn.close()
+
+    def _detect_server_version(self):
+        """Status-ping the server and select an exact local packet schema."""
+        status_conn = Connection(self.host, self.port, timeout=8.0)
+        try:
+            status_conn.connect()
+            status_conn.send_packet(self.protocol.encode(
+                "handshaking", "toServer", "set_protocol", {
+                    "protocolVersion": self.protocol.protocol_version,
+                    "serverHost": self.host,
+                    "serverPort": self.port,
+                    "nextState": 1,
+                }))
+            status_conn.send_packet(self.protocol.encode(
+                "status", "toServer", "ping_start", {}))
+            _, params = self.protocol.decode(
+                "status", "toClient", status_conn.read_packet())
+            response = json.loads(params["response"])
+            server_version = response["version"]
+            protocol_number = int(server_version["protocol"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ConnectionError(
+                f"server status response did not contain a valid protocol: {exc}") from exc
+        finally:
+            status_conn.close()
+
+        version = version_for_protocol(protocol_number)
+        if version is None:
+            supported = ", ".join(
+                f"{number} ({name})"
+                for number, name in sorted(available_protocols().items()))
+            raise UnsupportedProtocol(
+                f"server advertises unsupported Minecraft protocol "
+                f"{protocol_number} ({server_version.get('name', 'unknown version')}); "
+                f"supported protocols: {supported}")
+
+        self._use_protocol_version(version, protocol_number)
+        self.emit("protocol", {
+            "version": version,
+            "protocol": protocol_number,
+            "server_name": server_version.get("name"),
+        })
+
+    def _use_protocol_version(self, version, protocol_number):
+        """Replace provisional protocol-dependent state before login."""
+        self.protocol = Protocol(version)
+        self.advertise_protocol = protocol_number
+        self.world = None
+        if version not in _LEGACY_CHUNK_FORMAT_VERSIONS:
+            try:
+                self.world = World(
+                    get_block_table(version), self.protocol.protocol_version)
+            except ValueError:
+                pass
+        try:
+            self.inventory = Inventory(get_item_table(version))
+        except ValueError:
+            self.inventory = Inventory(None)
 
     def stop(self):
         """Ask the pump loop to exit and close the socket."""
@@ -455,6 +529,11 @@ class Client:
         elif name == "finish_configuration":
             self.send("finish_configuration", {})
             self._set_state("play")
+            # Modern clients acknowledge that their terrain loading screen has
+            # closed. Headless clients have no screen to wait for, and some
+            # proxies withhold all play traffic until this packet arrives.
+            if self._has("play", "toServer", "player_loaded"):
+                self.send("player_loaded", {})
             self.emit("ready")
         elif name == "disconnect":
             self.emit("disconnect", self._decode(name, raw))

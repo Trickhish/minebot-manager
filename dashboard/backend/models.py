@@ -16,7 +16,7 @@ class CreateBotRequest(BaseModel):
     host: str
     port: int = 25565
     username: str = "Bot"
-    version: str = "1.18.2"
+    version: str = "auto"
     # Advertise a protocol number newer than the vendored schema (see
     # Client.advertise_protocol). Optional; defaults to the schema's own.
     advertise_protocol: Optional[int] = None

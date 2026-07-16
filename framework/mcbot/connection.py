@@ -41,7 +41,9 @@ class Connection:
     # -- lifecycle ---------------------------------------------------------
     def connect(self) -> None:
         self.sock = socket.create_connection((self.host, self.port), self.timeout)
-        self.sock.settimeout(self.timeout)
+        # The timeout bounds TCP setup only. A valid play connection may be
+        # quiet for longer; close() interrupts this blocking read on stop.
+        self.sock.settimeout(None)
 
     def close(self) -> None:
         if self.sock is not None:
