@@ -89,6 +89,7 @@ class ManagedBot:
         self._server_auth_register_attempted = False
         self._server_auth_probe_attempted = False
         self._server_auth_session = 0
+        self._server_auth_detected = False
         self._server_auth_complete = False
 
         self.client = self._new_client()
@@ -250,6 +251,7 @@ class ManagedBot:
         text = _chat_text(params)
         if not text:
             return
+        detected = False
         with self._server_auth_lock:
             if _is_server_auth_success(text):
                 self._server_auth_complete = True
@@ -260,7 +262,18 @@ class ManagedBot:
                 return
             if time.monotonic() - self._server_auth_started_at > SERVER_AUTH_PROMPT_WINDOW:
                 return
+            if not self._server_auth_detected:
+                self._server_auth_detected = True
+                detected = True
+            # A usage response to our argument-free probe only proves that the
+            # plugin exists. Try login first; an unregistered account will then
+            # receive a real registration prompt and follow the opt-in path.
+            if (kind == "register" and self._server_auth_probe_attempted
+                    and _is_register_usage(text)):
+                kind = "login"
             self._server_auth_pending = {"kind": kind, "text": text}
+        if detected:
+            self._emit_threadsafe("server_auth", {"action": "detected"})
         self._try_server_auth()
 
     def _schedule_server_auth_probe(self) -> None:
@@ -430,6 +443,7 @@ class ManagedBot:
             self._server_auth_login_attempted = False
             self._server_auth_register_attempted = False
             self._server_auth_probe_attempted = False
+            self._server_auth_detected = False
             self._server_auth_complete = False
 
         def apply():
@@ -660,6 +674,10 @@ def _is_server_auth_success(text: str) -> bool:
         r"you\s+(?:are|have been)\s+(?:now\s+)?"
         r"(?:logged\s*in|registered|authenticated)|already\s+logged\s*in",
         text, re.IGNORECASE))
+
+
+def _is_register_usage(text: str) -> bool:
+    return bool(re.search(r"\busage\b[^\r\n]*/register\b", text, re.IGNORECASE))
 
 
 def _register_command(prompt: str, password: str) -> str:

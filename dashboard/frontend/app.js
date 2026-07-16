@@ -224,6 +224,7 @@ function logEvent(ev) {
   else if (type === "protocol") text = `detected ${ev.data.server_name || ev.data.version} · protocol ${ev.data.protocol} · ${ev.data.version} schema`;
   else if (type === "server_auth") text = {
     probe_sent: "checking for an offline server login system",
+    detected: "offline server login system detected",
     register_sent: "automatic server registration sent",
     login_sent: "automatic server login sent",
   }[ev.data.action] || fmt(ev.data);
