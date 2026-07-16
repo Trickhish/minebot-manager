@@ -62,6 +62,7 @@ class ManagedBot:
         self.connected_at: Optional[float] = None
         self.last_error: Optional[str] = None
         self.reconnect_attempts = 0
+        self._session_disconnect_reason: Optional[str] = None
 
         self._history: deque = deque(maxlen=HISTORY_SIZE)
         self._subscribers: set[asyncio.Queue] = set()
@@ -176,6 +177,7 @@ class ManagedBot:
 
         @bot.on("disconnect")
         def _disconnect(reason):
+            self._session_disconnect_reason = _format_reason(reason)
             self._emit_threadsafe("disconnect", {"reason": _safe(reason)})
 
         @bot.on("player_state")
@@ -275,10 +277,16 @@ class ManagedBot:
         except Exception as exc:  # noqa: BLE001 - surface anything else, don't die silently
             return "error", f"{type(exc).__name__}: {exc}"
         else:
-            return "disconnected", None
+            message = self._session_disconnect_reason
+            if not message:
+                message = (f"connection ended during {self.client.state} "
+                           "without a server reason")
+            return "disconnected", message
 
     def _reset_session(self) -> None:
         """Clear per-connection state at the start of each attempt."""
+        self._session_disconnect_reason = None
+
         def apply():
             self.connected_at = None
             self.state = "connecting"
@@ -290,7 +298,7 @@ class ManagedBot:
             self.state = "reconnecting"
             if message:
                 self.last_error = message
-            if outcome in ("error",) and message:
+            if message and not self._session_disconnect_reason:
                 self._emit("error", {"kind": outcome, "message": message})
             self._emit("state", {
                 "state": "reconnecting",
@@ -305,7 +313,7 @@ class ManagedBot:
             self.state = "error" if outcome in ("error", "online_mode_required") else "disconnected"
             if message and message != "stopped":
                 self.last_error = message
-            if outcome in ("error", "online_mode_required") and message:
+            if message and message != "stopped" and not self._session_disconnect_reason:
                 self._emit("error", {"kind": outcome, "message": message})
             self._emit("state", {"state": self.state})
         self.loop.call_soon_threadsafe(apply)
@@ -419,3 +427,18 @@ def _safe(value):
     if isinstance(value, bytes):
         return value.hex()
     return str(value)
+
+
+def _format_reason(reason) -> str:
+    """Turn a decoded server disconnect payload into a console message."""
+    value = _safe(reason)
+    if value is None:
+        return "server disconnected without a reason"
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("reason", "message", "text"):
+            detail = value.get(key)
+            if isinstance(detail, str) and detail:
+                return detail
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
