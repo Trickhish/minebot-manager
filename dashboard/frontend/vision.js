@@ -192,7 +192,10 @@ const Vision = (() => {
     if (atlasState === "loading") return;
     atlasState = "loading";
     const done = (s) => { atlasState = s; atlasWaiters.forEach(f => f()); atlasWaiters = []; };
-    fetch("api/textures/atlas.json").then(r => r.json()).then(meta => {
+    // Version tag busts any stale browser cache of the atlas when the tiles
+    // change (e.g. new tints). Bump alongside the vision.js cache-buster.
+    const av = "?v=20260716-liquid-textures";
+    fetch("api/textures/atlas.json" + av).then(r => r.json()).then(meta => {
       if (!meta.has_textures) return done("none");
       atlasCols = meta.cols; atlasRows = meta.rows; atlasTile = meta.tile;
       atlasStems = meta.stems || {};
@@ -208,7 +211,7 @@ const Vision = (() => {
         done("loaded");
       };
       img.onerror = () => done("none");
-      img.src = "api/textures/atlas.png";
+      img.src = "api/textures/atlas.png" + av;
     }).catch(() => done("none"));
   }
 

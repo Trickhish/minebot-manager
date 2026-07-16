@@ -187,8 +187,11 @@ async def atlas_meta():
 async def atlas_png():
     if atlas is None:
         raise HTTPException(404, "no texture atlas")
+    # `no-cache` = the browser may store it but must revalidate via ETag every
+    # load, so a rebuilt atlas (e.g. new tints) propagates immediately instead
+    # of being pinned for a day. Revalidation is a cheap 304 when unchanged.
     return FileResponse(atlas.png_path, media_type="image/png",
-                        headers={"Cache-Control": "public, max-age=86400"})
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/bots/{bot_id}/voxels")
