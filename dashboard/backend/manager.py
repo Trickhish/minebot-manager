@@ -180,6 +180,10 @@ class ManagedBot:
             self._session_disconnect_reason = _format_reason(reason)
             self._emit_threadsafe("disconnect", {"reason": _safe(reason)})
 
+        @bot.on("authentication")
+        def _authentication(info):
+            self._emit_threadsafe("auth", _safe(info))
+
         @bot.on("player_state")
         def _stats(snapshot):
             self._emit_threadsafe("stats", _safe(snapshot))
@@ -273,14 +277,14 @@ class ManagedBot:
         except OnlineModeRequired as exc:
             return "online_mode_required", str(exc)
         except (Disconnected, ConnectionError, OSError) as exc:
-            return "disconnected", str(exc)
+            return "disconnected", _connection_failure_message(
+                self.client.state, exc)
         except Exception as exc:  # noqa: BLE001 - surface anything else, don't die silently
-            return "error", f"{type(exc).__name__}: {exc}"
+            return "error", _connection_failure_message(self.client.state, exc)
         else:
             message = self._session_disconnect_reason
             if not message:
-                message = (f"connection ended during {self.client.state} "
-                           "without a server reason")
+                message = _connection_failure_message(self.client.state)
             return "disconnected", message
 
     def _reset_session(self) -> None:
@@ -442,3 +446,19 @@ def _format_reason(reason) -> str:
             if isinstance(detail, str) and detail:
                 return detail
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _connection_failure_message(state: str, exc=None) -> str:
+    """Describe where a connection failed in Minecraft protocol terms."""
+    phase = {
+        "handshaking": "Minecraft handshake failed before login",
+        "login": "Minecraft login failed before the bot entered the world",
+        "configuration": (
+            "Minecraft login configuration failed before the bot entered the world"),
+        "play": "Minecraft connection was lost after the bot entered the world",
+    }.get(state, f"Minecraft connection failed during {state}")
+    if exc is None:
+        detail = "connection ended without a server reason"
+    else:
+        detail = str(exc).strip() or type(exc).__name__
+    return f"{phase}: {detail}"

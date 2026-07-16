@@ -5,9 +5,9 @@ and walks the login flow to reach the Play state, then pumps packets and
 dispatches them as events. Version-aware: it handles both the classic
 login->play path (<=1.20.1) and the login->configuration->play path (>=1.20.2).
 
-Only offline (unauthenticated) login is implemented. If the server is in
-online mode it will send `encryption_begin`; we surface that clearly instead of
-silently failing, since completing it needs Microsoft auth (a separate module).
+Offline (unauthenticated) login is implemented, including servers that encrypt
+transport without Microsoft authentication. If the server requests session
+authentication, we surface that clearly instead of silently failing.
 
 Usage:
     client = Client("mc.example.com", username="Bot", version="1.18.2")
@@ -125,7 +125,7 @@ _WORLD_PACKETS = ("map_chunk", "unload_chunk", "block_change", "multi_block_chan
 
 
 class OnlineModeRequired(Exception):
-    """Server demanded encryption (online mode); offline login can't continue."""
+    """Server demanded Microsoft authentication; offline login can't continue."""
 
 
 class Disconnected(Exception):
@@ -147,6 +147,7 @@ class Client:
         self.state = "handshaking"
         self.uuid = offline_uuid(username)
         self.running = False
+        self.online_mode: bool | None = None
         self._handlers: dict = defaultdict(list)
         # Outbound packet-id overrides for talking to a server whose packet
         # numbering drifted from our schema: {(state, name): id}. Needed when
@@ -348,6 +349,8 @@ class Client:
             return
         try:
             handler(name, raw)
+        except (OnlineModeRequired, Disconnected):
+            raise
         except Exception as exc:  # noqa: BLE001
             # One packet whose body doesn't match our schema (expected with a
             # drift-hybrid schema like 26.2, which borrows 1.21.11 layouts) --
@@ -375,14 +378,30 @@ class Client:
             params = self._decode(name, raw)
             self.conn.compression_threshold = params["threshold"]
         elif name == "encryption_begin":
-            raise OnlineModeRequired(
-                "server is in online mode (sent encryption_begin); "
-                "offline login cannot continue")
+            params = self._decode(name, raw) or {}
+            should_authenticate = params.get("shouldAuthenticate", True)
+            self.online_mode = bool(should_authenticate)
+            self.emit("authentication", {
+                "online_mode": self.online_mode,
+                "encrypted": True,
+            })
+            if should_authenticate:
+                raise OnlineModeRequired(
+                    "server requires a premium/online-mode Minecraft account "
+                    "(encryption request requires Microsoft authentication); "
+                    "offline login cannot continue")
+            self._enable_offline_encryption(params)
         elif name == "login_plugin_request":
             params = self._decode(name, raw) or {}
             self.send("login_plugin_response",
                       {"messageId": params.get("messageId", 0), "data": None})
         elif name == "success":
+            if self.online_mode is None:
+                self.online_mode = False
+                self.emit("authentication", {
+                    "online_mode": False,
+                    "encrypted": False,
+                })
             params = self._decode(name, raw)
             self.emit("login", params)
             if self._has("login", "toServer", "login_acknowledged"):
@@ -395,6 +414,27 @@ class Client:
             params = self._decode(name, raw)
             self.emit("disconnect", params)
             self.running = False
+
+    def _enable_offline_encryption(self, params):
+        """Complete encryption when the server skips Microsoft authentication."""
+        import os
+
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        public_key = serialization.load_der_public_key(params["publicKey"])
+        shared_secret = os.urandom(16)
+
+        def encrypt(value):
+            return public_key.encrypt(value, padding.PKCS1v15())
+
+        self.send("encryption_begin", {
+            "sharedSecret": encrypt(shared_secret),
+            "verifyToken": encrypt(params["verifyToken"]),
+        })
+        # The response itself is plaintext; encryption starts immediately
+        # after it for every subsequent byte in both directions.
+        self.conn.enable_encryption(shared_secret)
 
     def _enter_configuration(self):
         self._set_state("configuration")

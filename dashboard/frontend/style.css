@@ -425,6 +425,7 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 .log-line .tag { flex-shrink: 0; font-weight: 600; }
 .log-line.chat .tag { color: var(--accent); }
 .log-line.state .tag { color: var(--amber); }
+.log-line.auth .tag { color: var(--green); }
 .log-line.error .tag { color: var(--red); }
 .log-line.move .tag, .log-line.spawn .tag { color: var(--green); }
 .log-line.system .tag { color: var(--muted); }

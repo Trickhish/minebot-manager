@@ -180,6 +180,9 @@ function logEvent(ev) {
   else if (type === "spawn") text = `spawned at x ${ev.data.x?.toFixed(1)} y ${ev.data.y?.toFixed(1)} z ${ev.data.z?.toFixed(1)}`;
   else if (type === "disconnect") text = `disconnected: ${fmt(ev.data.reason)}`;
   else if (type === "error") text = `${ev.data.kind}: ${ev.data.message}`;
+  else if (type === "auth") text = ev.data.online_mode
+    ? "premium / online-mode server (Microsoft account required)"
+    : `offline / cracked-mode server${ev.data.encrypted ? " (encrypted connection)" : ""}`;
   else if (type === "ready") text = "entered play state";
   else if (type === "macro") {
     const d = ev.data;
@@ -190,7 +193,7 @@ function logEvent(ev) {
 }
 
 function tagFor(type) {
-  return { chat: "CHAT", state: "STATE", error: "ERR", spawn: "SPAWN",
+  return { chat: "CHAT", state: "STATE", error: "ERR", auth: "AUTH", spawn: "SPAWN",
            disconnect: "DISC", ready: "READY", macro: "MACRO" }[type] || type.toUpperCase();
 }
 
