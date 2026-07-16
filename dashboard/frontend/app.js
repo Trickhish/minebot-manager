@@ -536,14 +536,14 @@ function startVisionControl() {
   sendVisionControl();
   visionControl.timer = setInterval(sendVisionControl, 50);
   if (!target.requestPointerLock) {
-    stopVisionControl();
+    pauseVisionControl();
     return;
   }
   try {
     const lock = target.requestPointerLock();
-    if (lock && typeof lock.catch === "function") lock.catch(stopVisionControl);
+    if (lock && typeof lock.catch === "function") lock.catch(pauseVisionControl);
   } catch {
-    stopVisionControl();
+    pauseVisionControl();
   }
 }
 
@@ -577,7 +577,9 @@ function showVisionMenu(mode) {
   $("#tool-chests").checked = tools.chests;
   $("#tool-freecam").checked = mode === "freecam";
   $("#control-render-distance").value = $("#vision-range").value;
-  $("#control-exit").textContent = mode === "freecam" ? "Exit freecam" : "Exit control mode";
+  $("#control-exit").textContent = mode === "freecam"
+    ? (freecam.returnToControl ? "Return to bot control" : "Exit freecam")
+    : "Exit control mode";
   $("#control-menu").hidden = false;
 }
 
@@ -651,41 +653,53 @@ $("#control-resume").addEventListener("click", () => {
 });
 $("#control-exit").addEventListener("click", () => {
   if (visionControl.active) stopVisionControl();
-  else if (freecam.active) stopFreecam();
+  else if (freecam.active) stopFreecam(true);
 });
 
 // -- vision tools (freecam / xray / chest highlight) ------------------------
 // Freecam is a browser-only fly camera (never drives the bot).
-const freecam = { active: false, paused: false };
+const freecam = { active: false, paused: false, returnToControl: false };
 const FREECAM_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
 ]);
 
 function startFreecam() {
   if (freecam.active) return;
-  if (visionControl.active) stopVisionControl();
+  const returnToControl = visionControl.active;
+  if (returnToControl) stopVisionControl();
   freecam.active = true;
   freecam.paused = false;
+  freecam.returnToControl = returnToControl;
   Vision.setTool("freecam", true);
   $("#tool-freecam").checked = true;
   $("#control-menu").hidden = true;
   $("#vision-crosshair").hidden = false;
   const target = Vision.element();
+  if (!target.requestPointerLock) {
+    pauseFreecam();
+    return;
+  }
   try {
-    if (target.requestPointerLock) target.requestPointerLock();
-  } catch { /* pointer lock is optional; drag-look still works */ }
+    const lock = target.requestPointerLock();
+    if (lock && typeof lock.catch === "function") lock.catch(pauseFreecam);
+  } catch {
+    pauseFreecam();
+  }
 }
 
-function stopFreecam() {
+function stopFreecam(resumeControl = false) {
   if (!freecam.active) return;
+  const shouldResumeControl = resumeControl && freecam.returnToControl;
   freecam.active = false;
   freecam.paused = false;
+  freecam.returnToControl = false;
   Vision.setTool("freecam", false);
   FREECAM_KEYS.forEach(k => Vision.setFreecamKey(k, false));
   $("#tool-freecam").checked = false;
   $("#control-menu").hidden = true;
   if (!visionControl.active) $("#vision-crosshair").hidden = true;
   if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
+  if (shouldResumeControl) startVisionControl();
 }
 
 function pauseFreecam() {
@@ -722,9 +736,10 @@ function resetVisionTools() {
 $("#tool-xray").addEventListener("change", (e) => Vision.setTool("xray", e.target.checked));
 $("#tool-chests").addEventListener("change", (e) => Vision.setTool("chests", e.target.checked));
 $("#tool-freecam").addEventListener("change", (e) => {
-  // Drop focus so Space (freecam "up") doesn't re-toggle the checkbox.
+  if (e.target.checked) startFreecam(); else stopFreecam(true);
+  // Drop focus after requesting pointer lock so the click's user activation is
+  // still available to the browser for the mode transition.
   e.target.blur();
-  if (e.target.checked) startFreecam(); else stopFreecam();
 });
 
 document.addEventListener("keydown", (e) => {
