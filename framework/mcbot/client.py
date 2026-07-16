@@ -52,19 +52,52 @@ _GRAVITY = 32.0
 _VERTICAL_DRAG = 0.98
 
 # Blocks the player can stand inside of (no horizontal/ground collision).
+# We have no per-block collision data vendored, so this is a curated list of
+# blocks that in vanilla have no (or negligible) collision box: fluids, air,
+# and small non-solid decorations/flora.
 _PASSABLE_EXACT = frozenset({
+    # air & fluids
     "air", "cave_air", "void_air", "water", "lava", "bubble_column",
-    "short_grass", "grass", "tall_grass", "fern", "large_fern",
-    "dead_bush", "seagrass", "tall_seagrass", "kelp", "kelp_plant",
-    "cobweb", "vine", "glow_lichen", "sculk_vein", "hanging_roots",
-    "nether_sprouts", "warped_roots", "crimson_roots", "sweet_berry_bush",
+    # grass & ferns
+    "short_grass", "grass", "tall_grass", "short_dry_grass", "tall_dry_grass",
+    "fern", "large_fern", "dead_bush", "bush", "firefly_bush",
+    "seagrass", "tall_seagrass",
+    # vines, roots & lichen
+    "vine", "weeping_vines", "weeping_vines_plant", "twisting_vines",
+    "twisting_vines_plant", "cave_vines", "cave_vines_plant", "glow_lichen",
+    "sculk_vein", "resin_clump", "hanging_roots", "nether_sprouts",
+    "warped_roots", "crimson_roots",
+    # canes, kelp, bamboo shoot
+    "bamboo", "bamboo_sapling", "sugar_cane", "kelp", "kelp_plant",
+    # mushrooms & fungi
+    "brown_mushroom", "red_mushroom", "crimson_fungus", "warped_fungus",
+    # flowers
     "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet",
     "oxeye_daisy", "cornflower", "lily_of_the_valley", "wither_rose",
-    "red_tulip", "orange_tulip", "white_tulip", "pink_tulip",
-    "sunflower", "lilac", "rose_bush", "peony", "fire", "soul_fire",
-    "structure_void", "light", "torch", "wall_torch", "soul_torch",
-    "soul_wall_torch", "redstone_torch", "redstone_wall_torch",
+    "torchflower", "red_tulip", "orange_tulip", "white_tulip", "pink_tulip",
+    "sunflower", "lilac", "rose_bush", "peony", "spore_blossom",
+    "chorus_flower", "chorus_plant", "cactus_flower", "pink_petals",
+    "wildflowers", "leaf_litter", "closed_eyeblossom", "open_eyeblossom",
+    # crops
+    "wheat", "carrots", "potatoes", "beetroots", "nether_wart",
+    "melon_stem", "pumpkin_stem", "attached_melon_stem",
+    "attached_pumpkin_stem", "sweet_berry_bush", "pitcher_crop",
+    "torchflower_crop", "cocoa",
+    # amethyst buds (small collision -- treat as passable)
+    "small_amethyst_bud", "medium_amethyst_bud", "large_amethyst_bud",
+    "amethyst_cluster",
+    # misc thin / non-colliding
+    "lily_pad", "small_dripleaf", "cobweb", "fire", "soul_fire",
+    "redstone_wire", "tripwire", "tripwire_hook", "lever", "ladder",
+    "scaffolding", "snow", "structure_void", "light", "moss_carpet",
+    "pale_moss_carpet", "frogspawn", "sculk_shrieker",
 })
+
+# Block-name suffixes that are always passable (whole families of decorations).
+_PASSABLE_SUFFIXES = (
+    "_sign", "_banner", "_sapling", "_torch", "_button", "_pressure_plate",
+    "_rail", "_carpet", "_coral_fan", "_coral_wall_fan",
+)
 
 
 def _is_passable(name: str | None) -> bool:
@@ -75,10 +108,7 @@ def _is_passable(name: str | None) -> bool:
     """
     if name is None or name in _PASSABLE_EXACT:
         return True
-    return (name.endswith(("_sign", "_hanging_sign", "_wall_sign",
-                           "_sapling", "_torch", "_banner", "_carpet",
-                           "_button", "_pressure_plate", "_rail"))
-            or name.endswith("rail"))
+    return name.endswith(_PASSABLE_SUFFIXES)
 
 
 def offline_uuid(username: str) -> str:
@@ -552,21 +582,39 @@ class Client:
                 self.position["on_ground"] = True
 
     def _ground_level_at(self, x, y, z):
-        """Top surface of the nearest loaded non-air block below ``y``."""
+        """Highest solid surface supporting the player box whose feet are at
+        (x, y, z).
+
+        The box is 0.6 wide, so it can straddle up to four block columns. We
+        scan every column the footprint overlaps and return the *highest* top
+        surface found -- that is the block the player actually stands on (and
+        is what lets the bot climb a staircase whose step is in the neighbour
+        column rather than dead-centre under its feet). Returns ``None`` only
+        when no column has a loaded solid block below the scan window.
+        """
         if self.world is None:
             return None
-        foot_x, foot_z = int(math.floor(x)), int(math.floor(z))
+        r = _PLAYER_HALF_WIDTH
+        eps = 1e-4
+        x0, x1 = math.floor(x - r + eps), math.floor(x + r - eps)
+        z0, z1 = math.floor(z - r + eps), math.floor(z + r - eps)
         foot_y = int(math.floor(y))
-        # Scan down from current foot Y, limited to 32 blocks so a bot
-        # mid-air over an unloaded chunk doesn't scan forever.
+        # Scan down, limited to 32 blocks so a bot mid-air over an unloaded
+        # chunk doesn't scan forever.
         scan_limit = max(self.world.min_y, foot_y - 32)
-        for by in range(foot_y, scan_limit - 1, -1):
-            name = self.world.block_name_at(foot_x, by, foot_z)
-            if name is None:
-                return  # chunk not loaded -- skip, don't guess
-            if not _is_passable(name):
-                return float(by + 1)
-        return None
+        best = None
+        for bx in range(x0, x1 + 1):
+            for bz in range(z0, z1 + 1):
+                for by in range(foot_y, scan_limit - 1, -1):
+                    name = self.world.block_name_at(bx, by, bz)
+                    if name is None:
+                        break  # chunk not loaded -- skip this column
+                    if not _is_passable(name):
+                        top = float(by + 1)
+                        if best is None or top > best:
+                            best = top
+                        break
+        return best
 
     def _box_blocked(self, x, y, z):
         """Whether the player's collision box, with feet at (x, y, z), overlaps
@@ -735,6 +783,16 @@ class Client:
             return nx, nz
         if on_ground and not self._box_blocked(nx, y + _STEP_HEIGHT, nz):
             return nx, nz  # low ledge; feet snap up to the surface in caller
+        # Blocked by a wall: creep up to its face in small increments instead of
+        # stopping short, so the box ends flush against the wall (and can still
+        # slide, since each axis is resolved separately).
+        steps = max(1, int(math.ceil((abs(dx) + abs(dz)) / 0.05)))
+        sx, sz = dx / steps, dz / steps
+        for _ in range(steps):
+            tx, tz = x + sx, z + sz
+            if self._box_blocked(tx, y, tz):
+                break
+            x, z = tx, tz
         return x, z
 
     def _step_up_to(self, x, y, z):
