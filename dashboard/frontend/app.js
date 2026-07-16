@@ -440,6 +440,12 @@ $("#map-live").addEventListener("change", (e) => {
 });
 
 $("#vision-range").addEventListener("change", (e) => {
+  $("#control-render-distance").value = e.target.value;
+  if (state.selected) Vision.setRange(Number(e.target.value));
+});
+$("#control-render-distance").value = $("#vision-range").value;
+$("#control-render-distance").addEventListener("change", (e) => {
+  $("#vision-range").value = e.target.value;
   if (state.selected) Vision.setRange(Number(e.target.value));
 });
 $("#vision-renderer").value = Vision.renderer();
@@ -460,7 +466,7 @@ function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
   stopVisionControl();
   stopFreecam();
-  $("#vision-tools").hidden = true;
+  $("#control-menu").hidden = true;
   $("#vision-modal").hidden = true;
   $(".vision-view").insertBefore(Vision.element(), $("#vision-status"));
   Vision.setRefreshInterval(VISION_SMALL_REFRESH_MS);
@@ -472,12 +478,12 @@ $("#vision-modal").addEventListener("click", (e) => {
   if (e.target.id === "vision-modal") closeVisionModal();   // click backdrop
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeVisionModal();
+  if (e.key === "Escape" && !visionControl.active) closeVisionModal();
 });
 
 // Pointer-lock first-person controls. The socket carries state snapshots at
 // Minecraft's 20 Hz tick rate; the host times out stale input independently.
-const visionControl = { active: false, keys: new Set(), timer: null };
+const visionControl = { active: false, paused: false, keys: new Set(), timer: null };
 const CONTROL_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
 ]);
@@ -490,14 +496,15 @@ function controlAxis(positive, negative) {
 function sendVisionControl(active = visionControl.active) {
   const look = Vision.look();
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN || (active && !look)) return;
+  const moving = active && !visionControl.paused;
   state.ws.send(JSON.stringify({
     type: "control",
     data: {
       active,
-      forward: active ? controlAxis("KeyW", "KeyS") : 0,
-      strafe: active ? controlAxis("KeyD", "KeyA") : 0,
-      jump: active && visionControl.keys.has("Space"),
-      sneak: active && (visionControl.keys.has("ShiftLeft") || visionControl.keys.has("ShiftRight")),
+      forward: moving ? controlAxis("KeyW", "KeyS") : 0,
+      strafe: moving ? controlAxis("KeyD", "KeyA") : 0,
+      jump: moving && visionControl.keys.has("Space"),
+      sneak: moving && (visionControl.keys.has("ShiftLeft") || visionControl.keys.has("ShiftRight")),
       yaw: look?.yaw ?? 0,
       pitch: look?.pitch ?? 0,
     },
@@ -508,7 +515,7 @@ function setControlUi(active) {
   const button = $("#vision-control");
   button.classList.toggle("active", active);
   button.textContent = active ? "Stop" : "Control";
-  $("#vision-crosshair").hidden = !active;
+  $("#vision-crosshair").hidden = !active || visionControl.paused;
 }
 
 function startVisionControl() {
@@ -521,8 +528,10 @@ function startVisionControl() {
   openVisionModal();
   const target = Vision.element();
   visionControl.active = true;
+  visionControl.paused = false;
   Vision.setControlActive(true);
   visionControl.keys.clear();
+  $("#control-menu").hidden = true;
   setControlUi(true);
   sendVisionControl();
   visionControl.timer = setInterval(sendVisionControl, 50);
@@ -542,12 +551,43 @@ function stopVisionControl() {
   if (!visionControl.active) return;
   sendVisionControl(false);
   visionControl.active = false;
+  visionControl.paused = false;
   Vision.setControlActive(false);
   visionControl.keys.clear();
   clearInterval(visionControl.timer);
   visionControl.timer = null;
+  $("#control-menu").hidden = true;
   setControlUi(false);
   if (document.pointerLockElement) document.exitPointerLock();
+}
+
+function pauseVisionControl() {
+  if (!visionControl.active || visionControl.paused) return;
+  visionControl.paused = true;
+  visionControl.keys.clear();
+  sendVisionControl();
+  const tools = Vision.getTools();
+  $("#tool-xray").checked = tools.xray;
+  $("#tool-chests").checked = tools.chests;
+  $("#tool-freecam").checked = false;
+  $("#control-render-distance").value = $("#vision-range").value;
+  $("#control-menu").hidden = false;
+  setControlUi(true);
+  if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
+}
+
+function resumeVisionControl() {
+  if (!visionControl.active || !visionControl.paused) return;
+  const target = Vision.element();
+  visionControl.paused = false;
+  $("#control-menu").hidden = true;
+  setControlUi(true);
+  try {
+    const lock = target.requestPointerLock();
+    if (lock && typeof lock.catch === "function") lock.catch(pauseVisionControl);
+  } catch {
+    pauseVisionControl();
+  }
 }
 
 $("#vision-control").addEventListener("click", () => {
@@ -555,8 +595,14 @@ $("#vision-control").addEventListener("click", () => {
   else startVisionControl();
 });
 document.addEventListener("pointerlockchange", () => {
-  if (visionControl.active && document.pointerLockElement !== Vision.element())
-    stopVisionControl();
+  if (!visionControl.active) return;
+  if (document.pointerLockElement === Vision.element()) {
+    visionControl.paused = false;
+    $("#control-menu").hidden = true;
+    setControlUi(true);
+  } else {
+    pauseVisionControl();
+  }
 });
 document.addEventListener("mousemove", (e) => {
   if (!visionControl.active || document.pointerLockElement !== Vision.element()) return;
@@ -565,9 +611,11 @@ document.addEventListener("mousemove", (e) => {
 document.addEventListener("keydown", (e) => {
   if (!visionControl.active) return;
   if (e.key === "Escape") {
-    stopVisionControl();
+    e.preventDefault();
+    pauseVisionControl();
     return;
   }
+  if (visionControl.paused) return;
   if (CONTROL_KEYS.has(e.code)) {
     e.preventDefault();
     visionControl.keys.add(e.code);
@@ -575,35 +623,22 @@ document.addEventListener("keydown", (e) => {
   }
 });
 document.addEventListener("keyup", (e) => {
-  if (!visionControl.active || !CONTROL_KEYS.has(e.code)) return;
+  if (!visionControl.active || visionControl.paused || !CONTROL_KEYS.has(e.code)) return;
   e.preventDefault();
   visionControl.keys.delete(e.code);
   sendVisionControl();
 });
-window.addEventListener("blur", stopVisionControl);
+window.addEventListener("blur", pauseVisionControl);
+
+$("#control-resume").addEventListener("click", resumeVisionControl);
+$("#control-exit").addEventListener("click", stopVisionControl);
 
 // -- vision tools (freecam / xray / chest highlight) ------------------------
-// Ctrl+Space toggles a small overlay of rendering tools inside the expanded
-// vision view. Freecam is a browser-only fly camera (never drives the bot).
+// Freecam is a browser-only fly camera (never drives the bot).
 const freecam = { active: false };
 const FREECAM_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
 ]);
-
-function toggleVisionTools() {
-  if (!state.selected) return;
-  if (Vision.renderer() !== "custom") {
-    Vision.setRenderer("custom");
-    $("#vision-renderer").value = "custom";
-  }
-  const panel = $("#vision-tools");
-  if (panel.hidden) {
-    openVisionModal();
-    panel.hidden = false;
-  } else {
-    panel.hidden = true;
-  }
-}
 
 function startFreecam() {
   if (freecam.active) return;
@@ -630,7 +665,7 @@ function stopFreecam() {
 
 function resetVisionTools() {
   stopFreecam();
-  $("#vision-tools").hidden = true;
+  $("#control-menu").hidden = true;
   for (const id of ["tool-xray", "tool-chests"]) $("#" + id).checked = false;
   Vision.setTool("xray", false);
   Vision.setTool("chests", false);
@@ -645,11 +680,6 @@ $("#tool-freecam").addEventListener("change", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.ctrlKey && e.code === "Space") {
-    e.preventDefault();
-    toggleVisionTools();
-    return;
-  }
   if (freecam.active && FREECAM_KEYS.has(e.code)) {
     e.preventDefault();
     Vision.setFreecamKey(e.code, true);

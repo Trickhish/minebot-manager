@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260715-first-person-control">
+  <link rel="stylesheet" href="style.css?v=20260716-control-menu">
 </head>
 <body>
   <header>
@@ -123,7 +123,7 @@
                     <option value="prismarine">Prismarine</option>
                   </select>
                 </label>
-                <button id="vision-control" class="mini" title="First-person control (WASD, mouse, Space to jump, Shift to sneak, Escape to exit)">Control</button>
+                <button id="vision-control" class="mini" title="First-person control (WASD, mouse, Space to jump, Shift to sneak, Escape for menu)">Control</button>
                 <button id="vision-expand" class="mini" title="Expand to full screen">⛶</button>
               </div>
               <div class="vision-view">
@@ -210,14 +210,25 @@
       </div>
       <div class="vision-stage" id="vision-stage">
         <div class="vision-crosshair" id="vision-crosshair" hidden></div>
-        <div class="vision-tools" id="vision-tools" hidden>
-          <div class="vision-tools-head">Tools <span class="vt-hint">Ctrl+Space</span></div>
-          <label class="vt-row"><input type="checkbox" id="tool-freecam"> Freecam
-            <span class="vt-keys">WASD · Space/Shift · drag-look</span></label>
-          <label class="vt-row"><input type="checkbox" id="tool-xray"> X-ray
-            <span class="vt-keys">hide terrain</span></label>
-          <label class="vt-row"><input type="checkbox" id="tool-chests"> Highlight chests
-            <span class="vt-keys">through walls</span></label>
+        <div class="control-menu" id="control-menu" hidden>
+          <div class="control-menu-panel" role="dialog" aria-modal="true" aria-labelledby="control-menu-title">
+            <h3 id="control-menu-title">Game menu</h3>
+            <button id="control-resume" class="control-menu-primary">Resume</button>
+            <div class="control-menu-section">
+              <div class="control-menu-section-title">Vision</div>
+              <label class="control-option"><span>X-ray</span><input type="checkbox" id="tool-xray"></label>
+              <label class="control-option"><span>Highlight containers</span><input type="checkbox" id="tool-chests"></label>
+              <label class="control-option"><span>Render distance</span>
+                <select id="control-render-distance">
+                  <option value="24">24 blocks</option>
+                  <option value="40" selected>40 blocks</option>
+                  <option value="56">56 blocks</option>
+                </select>
+              </label>
+              <label class="control-option"><span>Freecam</span><input type="checkbox" id="tool-freecam"></label>
+            </div>
+            <button id="control-exit" class="control-menu-exit">Exit control mode</button>
+          </div>
         </div>
       </div>
     </div>
@@ -237,7 +248,7 @@
     </div>
   </div>
 
-  <script src="vision.js?v=20260716-vision-tools"></script>
-  <script src="app.js?v=20260716-vision-tools"></script>
+  <script src="vision.js?v=20260716-control-menu"></script>
+  <script src="app.js?v=20260716-control-menu"></script>
 </body>
 </html>
