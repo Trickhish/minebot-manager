@@ -478,7 +478,7 @@ $("#vision-modal").addEventListener("click", (e) => {
   if (e.target.id === "vision-modal") closeVisionModal();   // click backdrop
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !visionControl.active) closeVisionModal();
+  if (e.key === "Escape" && !visionControl.active && !freecam.active) closeVisionModal();
 });
 
 // Pointer-lock first-person controls. The socket carries state snapshots at
@@ -566,14 +566,19 @@ function pauseVisionControl() {
   visionControl.paused = true;
   visionControl.keys.clear();
   sendVisionControl();
+  showVisionMenu("control");
+  setControlUi(true);
+  if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
+}
+
+function showVisionMenu(mode) {
   const tools = Vision.getTools();
   $("#tool-xray").checked = tools.xray;
   $("#tool-chests").checked = tools.chests;
-  $("#tool-freecam").checked = false;
+  $("#tool-freecam").checked = mode === "freecam";
   $("#control-render-distance").value = $("#vision-range").value;
+  $("#control-exit").textContent = mode === "freecam" ? "Exit freecam" : "Exit control mode";
   $("#control-menu").hidden = false;
-  setControlUi(true);
-  if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
 }
 
 function resumeVisionControl() {
@@ -595,13 +600,23 @@ $("#vision-control").addEventListener("click", () => {
   else startVisionControl();
 });
 document.addEventListener("pointerlockchange", () => {
-  if (!visionControl.active) return;
-  if (document.pointerLockElement === Vision.element()) {
-    visionControl.paused = false;
-    $("#control-menu").hidden = true;
-    setControlUi(true);
-  } else {
-    pauseVisionControl();
+  const locked = document.pointerLockElement === Vision.element();
+  if (visionControl.active) {
+    if (locked) {
+      visionControl.paused = false;
+      $("#control-menu").hidden = true;
+      setControlUi(true);
+    } else {
+      pauseVisionControl();
+    }
+  } else if (freecam.active) {
+    if (locked) {
+      freecam.paused = false;
+      $("#control-menu").hidden = true;
+      $("#vision-crosshair").hidden = false;
+    } else {
+      pauseFreecam();
+    }
   }
 });
 document.addEventListener("mousemove", (e) => {
@@ -630,12 +645,18 @@ document.addEventListener("keyup", (e) => {
 });
 window.addEventListener("blur", pauseVisionControl);
 
-$("#control-resume").addEventListener("click", resumeVisionControl);
-$("#control-exit").addEventListener("click", stopVisionControl);
+$("#control-resume").addEventListener("click", () => {
+  if (visionControl.active) resumeVisionControl();
+  else if (freecam.active) resumeFreecam();
+});
+$("#control-exit").addEventListener("click", () => {
+  if (visionControl.active) stopVisionControl();
+  else if (freecam.active) stopFreecam();
+});
 
 // -- vision tools (freecam / xray / chest highlight) ------------------------
 // Freecam is a browser-only fly camera (never drives the bot).
-const freecam = { active: false };
+const freecam = { active: false, paused: false };
 const FREECAM_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
 ]);
@@ -644,8 +665,10 @@ function startFreecam() {
   if (freecam.active) return;
   if (visionControl.active) stopVisionControl();
   freecam.active = true;
+  freecam.paused = false;
   Vision.setTool("freecam", true);
   $("#tool-freecam").checked = true;
+  $("#control-menu").hidden = true;
   $("#vision-crosshair").hidden = false;
   const target = Vision.element();
   try {
@@ -656,11 +679,36 @@ function startFreecam() {
 function stopFreecam() {
   if (!freecam.active) return;
   freecam.active = false;
+  freecam.paused = false;
   Vision.setTool("freecam", false);
   FREECAM_KEYS.forEach(k => Vision.setFreecamKey(k, false));
   $("#tool-freecam").checked = false;
+  $("#control-menu").hidden = true;
   if (!visionControl.active) $("#vision-crosshair").hidden = true;
   if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
+}
+
+function pauseFreecam() {
+  if (!freecam.active || freecam.paused) return;
+  freecam.paused = true;
+  FREECAM_KEYS.forEach(k => Vision.setFreecamKey(k, false));
+  $("#vision-crosshair").hidden = true;
+  showVisionMenu("freecam");
+  if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
+}
+
+function resumeFreecam() {
+  if (!freecam.active || !freecam.paused) return;
+  const target = Vision.element();
+  freecam.paused = false;
+  $("#control-menu").hidden = true;
+  $("#vision-crosshair").hidden = false;
+  try {
+    const lock = target.requestPointerLock?.();
+    if (lock && typeof lock.catch === "function") lock.catch(pauseFreecam);
+  } catch {
+    pauseFreecam();
+  }
 }
 
 function resetVisionTools() {
@@ -680,19 +728,25 @@ $("#tool-freecam").addEventListener("change", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (freecam.active && FREECAM_KEYS.has(e.code)) {
+  if (!freecam.active) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    pauseFreecam();
+    return;
+  }
+  if (!freecam.paused && FREECAM_KEYS.has(e.code)) {
     e.preventDefault();
     Vision.setFreecamKey(e.code, true);
   }
 });
 document.addEventListener("keyup", (e) => {
-  if (freecam.active && FREECAM_KEYS.has(e.code)) {
+  if (freecam.active && !freecam.paused && FREECAM_KEYS.has(e.code)) {
     e.preventDefault();
     Vision.setFreecamKey(e.code, false);
   }
 });
 document.addEventListener("mousemove", (e) => {
-  if (!freecam.active) return;
+  if (!freecam.active || freecam.paused) return;
   // Freecam looks on pointer-lock movement, or click-drag when not locked.
   if (document.pointerLockElement === Vision.element()) {
     Vision.adjustLook(e.movementX, e.movementY);
@@ -700,9 +754,7 @@ document.addEventListener("mousemove", (e) => {
     Vision.adjustLook(e.movementX, e.movementY);
   }
 });
-window.addEventListener("blur", () => {
-  if (freecam.active) FREECAM_KEYS.forEach(k => Vision.setFreecamKey(k, false));
-});
+window.addEventListener("blur", pauseFreecam);
 
 function openInventoryModal() {
   $("#inventory-modal").hidden = false;
