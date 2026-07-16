@@ -222,9 +222,11 @@ function logEvent(ev) {
     ? "premium / online-mode server (Microsoft account required)"
     : `offline / cracked-mode server${ev.data.encrypted ? " (encrypted connection)" : ""}`;
   else if (type === "protocol") text = `detected ${ev.data.server_name || ev.data.version} · protocol ${ev.data.protocol} · ${ev.data.version} schema`;
-  else if (type === "server_auth") text = ev.data.action === "register_sent"
-    ? "automatic server registration sent"
-    : "automatic server login sent";
+  else if (type === "server_auth") text = {
+    probe_sent: "checking for an offline server login system",
+    register_sent: "automatic server registration sent",
+    login_sent: "automatic server login sent",
+  }[ev.data.action] || fmt(ev.data);
   else if (type === "ready") text = "entered play state";
   else if (type === "macro") {
     const d = ev.data;

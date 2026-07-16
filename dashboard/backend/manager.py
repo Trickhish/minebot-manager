@@ -35,6 +35,7 @@ HISTORY_SIZE = 200
 RECONNECT_BASE_DELAY = 3.0
 RECONNECT_MAX_DELAY = 60.0
 SERVER_AUTH_PROMPT_WINDOW = 120.0
+SERVER_AUTH_PROBE_DELAY = 3.0
 # Outcomes that will never succeed on retry -> don't auto-reconnect.
 TERMINAL_OUTCOMES = {"online_mode_required", "unsupported_protocol"}
 
@@ -86,6 +87,8 @@ class ManagedBot:
         self._server_auth_started_at = time.monotonic()
         self._server_auth_login_attempted = False
         self._server_auth_register_attempted = False
+        self._server_auth_probe_attempted = False
+        self._server_auth_session = 0
         self._server_auth_complete = False
 
         self.client = self._new_client()
@@ -171,6 +174,8 @@ class ManagedBot:
         def _state(state):
             mapped = _LIFECYCLE_STATE.get(state, state)
             self._set_state_threadsafe(mapped)
+            if state == "play":
+                self._schedule_server_auth_probe()
 
         @bot.on("ready")
         def _ready():
@@ -257,6 +262,36 @@ class ManagedBot:
                 return
             self._server_auth_pending = {"kind": kind, "text": text}
         self._try_server_auth()
+
+    def _schedule_server_auth_probe(self) -> None:
+        """Probe silent offline auth plugins after giving prompts time to arrive."""
+        with self._server_auth_lock:
+            session = self._server_auth_session
+        timer = threading.Timer(
+            SERVER_AUTH_PROBE_DELAY, self._probe_server_auth, args=(session,))
+        timer.daemon = True
+        timer.start()
+
+    def _probe_server_auth(self, session: int) -> None:
+        with self._server_auth_lock:
+            if (session != self._server_auth_session
+                    or self._server_auth_probe_attempted
+                    or self._server_auth_pending
+                    or self._server_auth_complete
+                    or self.client.online_mode is not False
+                    or self.client.state != "play"):
+                return
+            self._server_auth_probe_attempted = True
+
+        try:
+            self.client.chat("/register")
+        except Exception as exc:  # noqa: BLE001 - the probe contains no secret
+            self._emit_threadsafe("error", {
+                "kind": "server_auth",
+                "message": f"server login-system probe failed: {exc}",
+            })
+        else:
+            self._emit_threadsafe("server_auth", {"action": "probe_sent"})
 
     def _try_server_auth(self) -> None:
         with self._server_auth_lock:
@@ -389,10 +424,12 @@ class ManagedBot:
         """Clear per-connection state at the start of each attempt."""
         self._session_disconnect_reason = None
         with self._server_auth_lock:
+            self._server_auth_session += 1
             self._server_auth_pending = None
             self._server_auth_started_at = time.monotonic()
             self._server_auth_login_attempted = False
             self._server_auth_register_attempted = False
+            self._server_auth_probe_attempted = False
             self._server_auth_complete = False
 
         def apply():
@@ -598,6 +635,11 @@ def _strip_minecraft_formatting(value: str) -> str:
 
 
 def _server_auth_prompt(text: str) -> str | None:
+    if re.search(
+            r"already\s+(?:been\s+)?registered|"
+            r"account\s+(?:is\s+)?already\s+registered",
+            text, re.IGNORECASE):
+        return "login"
     if re.search(
             r"/register\b|please\s+register\b|"
             r"you\s+(?:must|need to)\s+register\b|not\s+registered\b",
