@@ -391,11 +391,18 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
 
     async def drive_bot():
         loop = asyncio.get_running_loop()
+        last = loop.time()
         while True:
             await asyncio.sleep(0.05)
+            # Advance physics by the real wall-clock elapsed time, not a fixed
+            # 0.05, so loop jitter / await overhead doesn't play jumps and
+            # movement back in slow motion. Clamp to keep a single step sane.
+            now = loop.time()
+            dt = max(0.01, min(0.1, now - last))
+            last = now
             if not controls["active"] or bot.control_owner is not owner:
                 continue
-            if loop.time() - controls["updated"] > 0.5:
+            if now - controls["updated"] > 0.5:
                 controls["active"] = False
                 if bot.control_owner is owner:
                     bot.control_owner = None
@@ -405,7 +412,7 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
             await asyncio.to_thread(
                 bot.client.control_step,
                 controls["forward"], controls["strafe"], controls["jump"],
-                controls["sneak"], controls["yaw"], controls["pitch"], 0.05,
+                controls["sneak"], controls["yaw"], controls["pitch"], dt,
             )
 
     tasks = [asyncio.create_task(fn()) for fn in

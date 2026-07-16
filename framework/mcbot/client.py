@@ -38,6 +38,48 @@ from .world import World
 # for these rather than silently misreading chunk bytes.
 _LEGACY_CHUNK_FORMAT_VERSIONS = {"1.8"}
 
+# -- first-person control physics (vanilla-tuned) -----------------------------
+# Player collision box: 0.6 wide (0.3 half-extent) x 1.8 tall.
+_PLAYER_HALF_WIDTH = 0.3
+_PLAYER_HEIGHT = 1.8
+# Auto step-up height. Treated as full cubes, so 1.0 lets the bot walk up a
+# single-block ledge (like stairs) without jumping, matching the old feel.
+_STEP_HEIGHT = 1.0
+# Vertical motion, in blocks/second (0.42 blocks/tick jump, 0.08 gravity, 0.98
+# drag, all scaled from vanilla's 20 Hz tick).
+_JUMP_VELOCITY = 8.4
+_GRAVITY = 32.0
+_VERTICAL_DRAG = 0.98
+
+# Blocks the player can stand inside of (no horizontal/ground collision).
+_PASSABLE_EXACT = frozenset({
+    "air", "cave_air", "void_air", "water", "lava", "bubble_column",
+    "short_grass", "grass", "tall_grass", "fern", "large_fern",
+    "dead_bush", "seagrass", "tall_seagrass", "kelp", "kelp_plant",
+    "cobweb", "vine", "glow_lichen", "sculk_vein", "hanging_roots",
+    "nether_sprouts", "warped_roots", "crimson_roots", "sweet_berry_bush",
+    "dandelion", "poppy", "blue_orchid", "allium", "azure_bluet",
+    "oxeye_daisy", "cornflower", "lily_of_the_valley", "wither_rose",
+    "red_tulip", "orange_tulip", "white_tulip", "pink_tulip",
+    "sunflower", "lilac", "rose_bush", "peony", "fire", "soul_fire",
+    "structure_void", "light", "torch", "wall_torch", "soul_torch",
+    "soul_wall_torch", "redstone_torch", "redstone_wall_torch",
+})
+
+
+def _is_passable(name: str | None) -> bool:
+    """Whether the player can occupy a block cell without colliding.
+
+    Unknown/unloaded (``None``) cells are treated as passable so the bot never
+    gets stuck against the edge of a chunk that hasn't streamed in yet.
+    """
+    if name is None or name in _PASSABLE_EXACT:
+        return True
+    return (name.endswith(("_sign", "_hanging_sign", "_wall_sign",
+                           "_sapling", "_torch", "_banner", "_carpet",
+                           "_button", "_pressure_plate", "_rail"))
+            or name.endswith("rail"))
+
 
 def offline_uuid(username: str) -> str:
     """The UUID an offline-mode server derives for a username (name-based v3)."""
@@ -522,9 +564,30 @@ class Client:
             name = self.world.block_name_at(foot_x, by, foot_z)
             if name is None:
                 return  # chunk not loaded -- skip, don't guess
-            if name not in ("air", "cave_air", "void_air"):
+            if not _is_passable(name):
                 return float(by + 1)
         return None
+
+    def _box_blocked(self, x, y, z):
+        """Whether the player's collision box, with feet at (x, y, z), overlaps
+        any solid block. Samples every block cell the 0.6 x 1.8 x 0.6 box spans,
+        so it accounts for player width rather than a single centre point."""
+        if self.world is None:
+            return False
+        r = _PLAYER_HALF_WIDTH
+        # Nudge the bounds inward by an epsilon so merely touching the face of an
+        # adjacent block (standing exactly against a wall) doesn't count as a hit.
+        eps = 1e-4
+        x0, x1 = math.floor(x - r + eps), math.floor(x + r - eps)
+        z0, z1 = math.floor(z - r + eps), math.floor(z + r - eps)
+        y0 = math.floor(y + eps)
+        y1 = math.floor(y + _PLAYER_HEIGHT - eps)
+        for bx in range(x0, x1 + 1):
+            for bz in range(z0, z1 + 1):
+                for by in range(y0, y1 + 1):
+                    if not _is_passable(self.world.block_name_at(bx, by, bz)):
+                        return True
+        return False
 
     def _position_tick_loop(self):
         next_position = _time.monotonic() + self._position_interval
@@ -603,52 +666,85 @@ class Client:
         distance = self.walk_speed * (0.3 if sneak else 1.0) * seconds
         self._control_until = _time.monotonic() + 0.2
 
+        dx = (-math.sin(radians) * forward
+              - math.cos(radians) * strafe) * distance
+        dz = (math.cos(radians) * forward
+              - math.sin(radians) * strafe) * distance
+
         with self._position_lock:
-            old_x, old_z = self.position["x"], self.position["z"]
-            self.position["x"] += (-math.sin(radians) * forward
-                                   - math.cos(radians) * strafe) * distance
-            self.position["z"] += (math.cos(radians) * forward
-                                   - math.sin(radians) * strafe) * distance
+            x, y, z = (self.position["x"], self.position["y"],
+                       self.position["z"])
+            on_ground = self.position["on_ground"]
             self.position["yaw"] = yaw
             self.position["pitch"] = pitch
-            ground = self._ground_level_at(
-                self.position["x"], self.position["y"], self.position["z"])
-            jump_started = (jump and not self._control_jump_held
-                            and self.position["on_ground"] and ground is not None)
+
+            jump_started = (jump and not self._control_jump_held and on_ground)
             self._control_jump_held = jump
-
             if jump_started:
-                self._control_velocity_y = 8.4
-                self.position["on_ground"] = False
+                self._control_velocity_y = _JUMP_VELOCITY
+                on_ground = False
 
-            if self.position["on_ground"]:
+            # Horizontal move, resolved one axis at a time so the box slides
+            # along a wall it hits instead of stopping dead. A blocked axis can
+            # auto step-up a low ledge (only while grounded, with headroom).
+            x, z = self._resolve_horizontal(x, y, z, dx, 0.0, on_ground)
+            x, z = self._resolve_horizontal(x, y, z, 0.0, dz, on_ground)
+            # Stepping up nudges the feet, but the exact surface is found below.
+            if self._box_blocked(x, y, z):
+                y = self._step_up_to(x, y, z)
+
+            ground = self._ground_level_at(x, y, z)
+
+            if on_ground:
                 if ground is not None:
-                    step = ground - self.position["y"]
-                    head_block = None
-                    if step > 0.001:
-                        head_block = self.world.block_name_at(
-                            int(math.floor(self.position["x"])), int(ground),
-                            int(math.floor(self.position["z"])))
-                    if (step > 1.01
-                            or (step > 0.001 and head_block not in
-                                ("air", "cave_air", "void_air"))):
-                        self.position["x"], self.position["z"] = old_x, old_z
-                    elif step >= -0.51:
-                        self.position["y"] = ground
-                    else:
-                        self.position["on_ground"] = False
+                    step = ground - y
+                    if -0.51 <= step <= _STEP_HEIGHT + 0.01:
+                        y = ground  # follow terrain / climb a low ledge
+                    elif step < -0.51:
+                        on_ground = False  # walked off an edge
                         self._control_velocity_y = 0.0
             else:
-                self.position["y"] += self._control_velocity_y * seconds
-                self._control_velocity_y = (
-                    self._control_velocity_y - 32.0 * seconds) * 0.98
-                if (self._control_velocity_y <= 0 and ground is not None
-                        and self.position["y"] <= ground):
-                    self.position["y"] = ground
-                    self.position["on_ground"] = True
-                    self._control_velocity_y = 0.0
+                vy = self._control_velocity_y
+                new_y = y + vy * seconds
+                if vy > 0 and self._box_blocked(x, new_y, z):
+                    new_y = y  # bonked head on a ceiling
+                    vy = 0.0
+                y = new_y
+                vy = (vy - _GRAVITY * seconds) * _VERTICAL_DRAG
+                if vy <= 0 and ground is not None and y <= ground:
+                    y = ground  # landed
+                    on_ground = True
+                    vy = 0.0
+                self._control_velocity_y = vy
+
+            self.position["x"], self.position["y"], self.position["z"] = x, y, z
+            self.position["on_ground"] = on_ground
         self._send_position_update()
         self.emit("move", self.get_position())
+
+    def _resolve_horizontal(self, x, y, z, dx, dz, on_ground):
+        """Apply a single-axis horizontal delta, honouring collisions.
+
+        Returns the new ``(x, z)``: the full move if clear, a step-up if a low
+        ledge can be climbed, otherwise the original (blocked) coordinate.
+        """
+        if not dx and not dz:
+            return x, z
+        nx, nz = x + dx, z + dz
+        if not self._box_blocked(nx, y, nz):
+            return nx, nz
+        if on_ground and not self._box_blocked(nx, y + _STEP_HEIGHT, nz):
+            return nx, nz  # low ledge; feet snap up to the surface in caller
+        return x, z
+
+    def _step_up_to(self, x, y, z):
+        """Feet Y that clears the ledge the player is standing inside of."""
+        offset = 0.5
+        while offset <= _STEP_HEIGHT + 0.01:
+            if not self._box_blocked(x, y + offset, z):
+                return y + offset
+            offset += 0.5
+        return y
 
     def move_to(self, x, y, z, speed=None):
         """Walk in a straight line to (x, y, z), blocking the calling thread.
