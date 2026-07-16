@@ -240,8 +240,7 @@ const Vision = (() => {
   }
 
   function usesFlatColor(name) {
-    return name === "water" || name === "lava"
-      || name === "hopper"
+    return name === "hopper"
       || name === "torch" || name.endsWith("_torch")   // real texture applied via torchParts
       || name === "chest" || name === "trapped_chest" || name === "ender_chest" || name.endsWith("_chest");
   }
@@ -345,8 +344,10 @@ const Vision = (() => {
 
   function shapeFor(name, stateOffset = -1) {
     if (!name) return { opaque: true, boxes: FULL_CUBE };
-    if (name === "water") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], color: PART_COLORS.water, shade: 1 }] };
-    if (name === "lava") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], color: PART_COLORS.lava, shade: 1 }] };
+    // No `color` -> textured with the block's own tile (water_still/lava_still),
+    // falling back to meta.color automatically when the atlas isn't loaded.
+    if (name === "water") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], shade: 1 }] };
+    if (name === "lava") return { opaque: false, boxes: [{ box: [[0, 0, 0], [1, 0.875, 1]], shade: 1 }] };
     if (name.endsWith("_slab")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.5, 1]]] };
     if (name.endsWith("_stairs")) return stairShape(stateOffset);
     if (name.endsWith("_carpet")) return { opaque: false, boxes: [[[0, 0, 0], [1, 0.0625, 1]]] };

@@ -66,6 +66,9 @@ def _material_variants(m: str):
 # by a representative green so they don't come out gray.
 _LEAF_TINT = (72, 105, 45)
 _GRASS_TINT = (104, 160, 72)
+# water_still/water_flow are grayscale in the pack (biome-tinted in-game).
+# Multiply by the default water color (#3F76E4) so it looks like water, not gray.
+_WATER_TINT = (63, 118, 228)
 _FOLIAGE = {
     "grass_block_top": _GRASS_TINT, "short_grass": _GRASS_TINT, "grass": _GRASS_TINT,
     "tall_grass_top": _GRASS_TINT, "tall_grass_bottom": _GRASS_TINT,
@@ -79,6 +82,8 @@ def _tint_for(stem: str):
         return _FOLIAGE[stem]
     if stem.endswith("_leaves"):
         return _LEAF_TINT
+    if stem.startswith("water_"):
+        return _WATER_TINT
     return None
 
 
