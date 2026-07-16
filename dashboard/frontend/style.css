@@ -62,6 +62,8 @@ main {
 .grow-card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.check { display: flex; align-items: center; gap: 8px; }
+.check input { width: auto; margin: 0; }
 .row { display: flex; gap: 10px; }
 .grow { flex: 1; }
 input, select {
@@ -145,7 +147,7 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 .badge.connecting, .badge.configuring, .badge.created, .badge.reconnecting { color: var(--amber); border-color: var(--amber); }
 .badge.error { color: var(--red); border-color: var(--red); }
 
-.detail-actions { display: flex; gap: 10px; margin: 16px 0 0; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 0; }
 
 /* -- vitals bar ---------------------------------------------------------- */
 .vitals {
@@ -195,7 +197,35 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
   margin: 14px 0;
   min-height: 0;
 }
+.console-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .detail-main .log { flex: 1; margin: 0; }
+.action-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 11px;
+  background: #151b22;
+  border: 1px solid #354151;
+  border-radius: 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+}
+.action-bar[hidden] { display: none; }
+.action-bar-label {
+  flex-shrink: 0;
+  color: var(--amber);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.action-bar-text { color: var(--text); word-break: break-word; }
 .right-col {
   width: 300px;
   flex-shrink: 0;
@@ -379,6 +409,9 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 /* -- inventory ----------------------------------------------------------- */
 .inventory-modal-box { width: min(460px, 94vw); height: auto; max-height: 90vh; }
 .inventory-modal-body { padding: 18px; overflow: auto; }
+.modal-box.server-auth-modal-box { width: min(420px, 94vw); height: auto; }
+.server-auth-form { padding: 18px; }
+.server-auth-form .editor-actions { justify-content: flex-end; }
 .inv-grid { display: flex; flex-direction: column; gap: 8px; }
 .inv-empty { padding: 8px 0; }
 .inv-row { display: flex; gap: 3px; }
@@ -426,6 +459,7 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 .log-line.chat .tag { color: var(--accent); }
 .log-line.state .tag { color: var(--amber); }
 .log-line.auth .tag { color: var(--green); }
+.log-line.server_auth .tag { color: var(--green); }
 .log-line.protocol .tag { color: var(--accent); }
 .log-line.error .tag { color: var(--red); }
 .log-line.move .tag, .log-line.spawn .tag { color: var(--green); }
@@ -519,3 +553,28 @@ button.mini { padding: 3px 8px; font-size: 11px; }
 .step-row .step-del { background: transparent; border: none; color: var(--red); cursor: pointer; padding: 0 4px; }
 .step-row .drag { color: var(--grey); cursor: grab; user-select: none; }
 .editor-actions { display: flex; gap: 10px; margin-top: 16px; }
+
+@media (max-width: 900px) {
+  main {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: calc(100vh - 55px);
+  }
+  .detail { min-height: 760px; }
+  .detail-main { flex-direction: column; }
+  .console-pane { min-height: 320px; }
+  .right-col {
+    width: 100%;
+    height: 300px;
+    flex-direction: row;
+  }
+}
+
+@media (max-width: 600px) {
+  main { padding: 10px; }
+  .detail-body { padding: 14px; }
+  .detail-header { gap: 12px; flex-wrap: wrap; }
+  .detail-header-right { text-align: left; }
+  .action-bar { align-items: flex-start; }
+  .right-col { height: 520px; flex-direction: column; }
+}

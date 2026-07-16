@@ -28,6 +28,11 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
 
 
+class ServerAuthRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128, pattern=r"^\S+$")
+    auto_register: bool = False
+
+
 class BotStatus(BaseModel):
     id: str
     username: str

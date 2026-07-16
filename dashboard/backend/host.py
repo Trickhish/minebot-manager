@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, Response
 
 from macros import MacroEngine, MacroError
 from manager import BotManager
-from models import ChatRequest, CreateBotRequest
+from models import ChatRequest, CreateBotRequest, ServerAuthRequest
 from textures import TILE, TextureAtlas
 
 from mcbot.protocol import available_versions
@@ -108,6 +108,24 @@ async def send_chat(bot_id: str, req: ChatRequest):
         bot.client.chat(req.message)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"{type(exc).__name__}: {exc}")
+    return {"ok": True}
+
+
+@app.put("/api/bots/{bot_id}/server-auth")
+async def set_server_auth(bot_id: str, req: ServerAuthRequest):
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    bot.set_server_auth(req.password, req.auto_register)
+    return {"ok": True}
+
+
+@app.delete("/api/bots/{bot_id}/server-auth")
+async def clear_server_auth(bot_id: str):
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    bot.clear_server_auth()
     return {"ok": True}
 
 

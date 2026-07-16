@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260716-auto-protocol">
+  <link rel="stylesheet" href="style.css?v=20260716-offline-auth">
 </head>
 <body>
   <header>
@@ -53,6 +53,7 @@
         <div class="detail-actions">
           <button id="btn-connect" class="secondary">Connect</button>
           <button id="btn-stop" class="secondary">Disconnect</button>
+          <button id="btn-server-auth" class="secondary">Server login</button>
           <button id="btn-remove" class="danger">Remove</button>
         </div>
         <p class="error" id="detail-error"></p>
@@ -80,7 +81,13 @@
         </div>
 
         <div class="detail-main">
-          <div class="log" id="log"></div>
+          <div class="console-pane">
+            <div class="action-bar" id="action-bar" role="status" aria-live="polite" hidden>
+              <span class="action-bar-label">Action bar</span>
+              <span class="action-bar-text" id="action-bar-text"></span>
+            </div>
+            <div class="log" id="log"></div>
+          </div>
 
           <div class="right-col">
             <div class="map-panel">
@@ -243,7 +250,27 @@
     </div>
   </div>
 
+  <div class="modal" id="server-auth-modal" hidden>
+    <div class="modal-box server-auth-modal-box">
+      <div class="modal-head">
+        <h2>Server login</h2>
+        <button class="modal-close" id="server-auth-modal-close">✕</button>
+      </div>
+      <form class="server-auth-form" id="server-auth-form">
+        <label>Password
+          <input id="server-auth-password" type="password" autocomplete="new-password" maxlength="128" required>
+        </label>
+        <label class="check"><input type="checkbox" id="server-auth-register"> Allow automatic registration</label>
+        <p class="error" id="server-auth-error"></p>
+        <div class="editor-actions">
+          <button type="submit">Save</button>
+          <button type="button" class="danger" id="server-auth-clear">Remove</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <script src="vision.js?v=20260716-control-menu"></script>
-  <script src="app.js?v=20260716-auto-protocol"></script>
+  <script src="app.js?v=20260716-offline-auth"></script>
 </body>
 </html>

@@ -18,6 +18,21 @@ const api = {
     });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
   },
+  async setServerAuth(id, settings) {
+    const r = await fetch(`api/bots/${id}/server-auth`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        password: settings.password,
+        auto_register: settings.autoRegister === true,
+      }),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  },
+  async clearServerAuth(id) {
+    const r = await fetch(`api/bots/${id}/server-auth`, { method: "DELETE" });
+    if (!r.ok && r.status !== 404)
+      throw new Error((await r.json()).detail || r.statusText);
+  },
   stop(id) { return fetch(`api/bots/${id}/stop`, { method: "POST" }); },
   connect(id) { return fetch(`api/bots/${id}/connect`, { method: "POST" }); },
   remove(id) { return fetch(`api/bots/${id}`, { method: "DELETE" }); },
@@ -26,6 +41,11 @@ const api = {
 const state = { bots: [], selected: null, ws: null, mapTimer: null, mapUrl: null, mapBusy: false };
 const VISION_SMALL_REFRESH_MS = 30000;
 const VISION_FULL_REFRESH_MS = 1800;
+const ACTION_BAR_TTL_MS = 5000;
+const OFFLINE_AUTH_STORAGE_KEY = "minebotOfflineAuth:v1";
+let actionBarTimer = null;
+let lastActionBarText = null;
+const syncedOfflineAuth = new Map();
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -38,6 +58,7 @@ const el = (tag, cls, text) => {
 // -- bot list ---------------------------------------------------------------
 async function refreshBots() {
   state.bots = await api.listBots();
+  syncOfflineAuthBots();
   renderBotList();
   if (state.selected && !state.bots.find(b => b.id === state.selected)) {
     selectBot(null);
@@ -69,6 +90,7 @@ function renderBotList() {
 function selectBot(id) {
   stopVisionControl();
   resetVisionTools();
+  closeServerAuthModal();
   if (state.ws) { state.ws.close(); state.ws = null; }
   stopMap();
   Vision.detach();
@@ -98,6 +120,7 @@ async function loadState(id) {
 }
 
 function resetPanels() {
+  clearActionBar();
   $("#vitals").hidden = true;
   $("#inv-grid").innerHTML = '<div class="muted inv-empty">no inventory data yet</div>';
   $("#macro-bar").innerHTML = "";
@@ -125,8 +148,8 @@ function openSocket(id) {
 }
 
 function onLiveEvent(ev) {
-  logEvent(ev);
   const bot = state.bots.find(b => b.id === ev.bot_id);
+  logEvent(ev);
   if (ev.type === "state" && bot) { bot.state = ev.data.state; renderBotList(); applyStatusPartial(ev.data.state, ev.data); }
   if (ev.type === "protocol" && bot) {
     bot.version = ev.data.version;
@@ -175,7 +198,18 @@ function logEvent(ev) {
   // too noisy for the log; surfaced in the header/vitals/inventory panels instead
   if (type === "move" || type === "stats" || type === "inventory") return;
   let text;
-  if (type === "chat") text = describeChat(ev.data);
+  if (type === "action_bar") {
+    showActionBar(describeChat(ev.data));
+    return;
+  }
+  if (type === "chat") {
+    const actionBar = describeActionBar(ev.data);
+    if (actionBar !== null) {
+      showActionBar(actionBar);
+      return;
+    }
+    text = describeChat(ev.data);
+  }
   else if (type === "state") {
     text = `→ ${ev.data.state}`;
     if (ev.data.state === "reconnecting")
@@ -188,6 +222,9 @@ function logEvent(ev) {
     ? "premium / online-mode server (Microsoft account required)"
     : `offline / cracked-mode server${ev.data.encrypted ? " (encrypted connection)" : ""}`;
   else if (type === "protocol") text = `detected ${ev.data.server_name || ev.data.version} · protocol ${ev.data.protocol} · ${ev.data.version} schema`;
+  else if (type === "server_auth") text = ev.data.action === "register_sent"
+    ? "automatic server registration sent"
+    : "automatic server login sent";
   else if (type === "ready") text = "entered play state";
   else if (type === "macro") {
     const d = ev.data;
@@ -198,7 +235,7 @@ function logEvent(ev) {
 }
 
 function tagFor(type) {
-  return { chat: "CHAT", state: "STATE", error: "ERR", auth: "AUTH", protocol: "PROTO", spawn: "SPAWN",
+  return { chat: "CHAT", state: "STATE", error: "ERR", auth: "AUTH", protocol: "PROTO", server_auth: "LOGIN", spawn: "SPAWN",
            disconnect: "DISC", ready: "READY", macro: "MACRO" }[type] || type.toUpperCase();
 }
 
@@ -211,7 +248,156 @@ function describeChat(data) {
   if (msg != null && typeof msg !== "object") {
     return p.senderName ? `<${fmt(p.senderName)}> ${fmt(msg)}` : fmt(msg);
   }
+  if (msg != null) return plainMinecraftText(msg);
   return fmt(p);
+}
+
+function describeActionBar(data) {
+  const p = data?.params;
+  if (p == null || typeof p !== "object") return null;
+  const position = p.position;
+  const isActionBar = p.isActionBar === true || p.overlay === true ||
+    position === 2 || position === "action_bar" || position === "game_info";
+  if (!isActionBar) return null;
+  const content = p.content ?? p.message ?? p.text ?? p.unsignedContent ?? "";
+  return plainMinecraftText(content).replace(/\s+/g, " ").trim();
+}
+
+function plainMinecraftText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.replace(/§[0-9a-fk-or]/gi, "");
+  if (Array.isArray(value)) return value.map(plainMinecraftText).join("");
+  if (typeof value !== "object") return String(value);
+  const own = typeof value.text === "string" ? value.text : "";
+  const translated = typeof value.translate === "string" && !own ? value.translate : "";
+  return own + translated + plainMinecraftText(value.extra);
+}
+
+function showActionBar(text) {
+  clearTimeout(actionBarTimer);
+  if (!text) {
+    clearActionBar();
+    return;
+  }
+  if (text !== lastActionBarText) {
+    $("#action-bar-text").textContent = text;
+    lastActionBarText = text;
+  }
+  $("#action-bar").hidden = false;
+  actionBarTimer = setTimeout(clearActionBar, ACTION_BAR_TTL_MS);
+}
+
+function clearActionBar() {
+  clearTimeout(actionBarTimer);
+  actionBarTimer = null;
+  lastActionBarText = null;
+  const bar = $("#action-bar");
+  if (bar) bar.hidden = true;
+}
+
+function offlineAuthKey(bot) {
+  return `${bot.host.trim().toLowerCase().replace(/\.$/, "")}:${bot.port}/${bot.username.toLowerCase()}`;
+}
+
+function readOfflineAuthStore() {
+  try {
+    const value = JSON.parse(localStorage.getItem(OFFLINE_AUTH_STORAGE_KEY) || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch { return {}; }
+}
+
+function offlineAuthSettings(bot) {
+  if (!bot) return null;
+  const value = readOfflineAuthStore()[offlineAuthKey(bot)];
+  return value && typeof value.password === "string" ? value : null;
+}
+
+function writeOfflineAuthSettings(bot, settings) {
+  const store = readOfflineAuthStore();
+  const key = offlineAuthKey(bot);
+  if (settings) store[key] = settings;
+  else delete store[key];
+  try {
+    localStorage.setItem(OFFLINE_AUTH_STORAGE_KEY, JSON.stringify(store));
+    return true;
+  } catch { return false; }
+}
+
+function offlineAuthFingerprint(bot, settings) {
+  return `${bot.created_at}:${settings.password}\u0000${settings.autoRegister === true}`;
+}
+
+function syncOfflineAuthBots() {
+  const liveIds = new Set(state.bots.map(bot => bot.id));
+  for (const id of syncedOfflineAuth.keys()) {
+    if (!liveIds.has(id)) syncedOfflineAuth.delete(id);
+  }
+  for (const bot of state.bots) {
+    const settings = offlineAuthSettings(bot);
+    if (!settings) continue;
+    const fingerprint = offlineAuthFingerprint(bot, settings);
+    if (syncedOfflineAuth.get(bot.id) === fingerprint) continue;
+    syncedOfflineAuth.set(bot.id, fingerprint);
+    api.setServerAuth(bot.id, settings).catch(() => {
+      if (syncedOfflineAuth.get(bot.id) === fingerprint)
+        syncedOfflineAuth.delete(bot.id);
+    });
+  }
+}
+
+function openServerAuthModal() {
+  const bot = state.bots.find(b => b.id === state.selected);
+  if (!bot) return;
+  const settings = offlineAuthSettings(bot);
+  $("#server-auth-password").value = settings?.password || "";
+  $("#server-auth-register").checked = settings?.autoRegister === true;
+  $("#server-auth-error").textContent = "";
+  $("#server-auth-modal").hidden = false;
+  $("#server-auth-password").focus();
+}
+
+function closeServerAuthModal() {
+  const modal = $("#server-auth-modal");
+  if (modal) modal.hidden = true;
+}
+
+async function saveServerAuthSettings(event) {
+  event.preventDefault();
+  const bot = state.bots.find(b => b.id === state.selected);
+  const password = $("#server-auth-password").value;
+  if (!bot) return;
+  if (!password || /\s/.test(password)) {
+    $("#server-auth-error").textContent = "Password must be non-empty and contain no spaces.";
+    return;
+  }
+  const settings = {
+    password,
+    autoRegister: $("#server-auth-register").checked,
+  };
+  if (!writeOfflineAuthSettings(bot, settings)) {
+    $("#server-auth-error").textContent = "Browser storage is unavailable.";
+    return;
+  }
+  try {
+    await api.setServerAuth(bot.id, settings);
+    syncedOfflineAuth.set(bot.id, offlineAuthFingerprint(bot, settings));
+    closeServerAuthModal();
+  } catch (err) {
+    $("#server-auth-error").textContent = err.message;
+  }
+}
+
+async function clearServerAuthSettings() {
+  const bot = state.bots.find(b => b.id === state.selected);
+  if (!bot) return;
+  writeOfflineAuthSettings(bot, null);
+  try {
+    await api.clearServerAuth(bot.id);
+    syncedOfflineAuth.delete(bot.id);
+    closeServerAuthModal();
+  } catch (err) {
+    $("#server-auth-error").textContent = err.message;
+  }
 }
 
 function logSystem(text) { appendLine("system", "···", text, Date.now() / 1000); }
@@ -271,6 +457,16 @@ $("#btn-stop").addEventListener("click", async () => {
 });
 $("#btn-remove").addEventListener("click", async () => {
   if (state.selected) { await api.remove(state.selected); selectBot(null); refreshBots(); }
+});
+$("#btn-server-auth").addEventListener("click", openServerAuthModal);
+$("#server-auth-modal-close").addEventListener("click", closeServerAuthModal);
+$("#server-auth-modal").addEventListener("click", (e) => {
+  if (e.target.id === "server-auth-modal") closeServerAuthModal();
+});
+$("#server-auth-form").addEventListener("submit", saveServerAuthSettings);
+$("#server-auth-clear").addEventListener("click", clearServerAuthSettings);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeServerAuthModal();
 });
 
 // -- vitals + effects -------------------------------------------------------

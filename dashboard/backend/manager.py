@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -33,6 +34,7 @@ HISTORY_SIZE = 200
 # Auto-reconnect backoff: exponential from BASE, capped at MAX (seconds).
 RECONNECT_BASE_DELAY = 3.0
 RECONNECT_MAX_DELAY = 60.0
+SERVER_AUTH_PROMPT_WINDOW = 120.0
 # Outcomes that will never succeed on retry -> don't auto-reconnect.
 TERMINAL_OUTCOMES = {"online_mode_required", "unsupported_protocol"}
 
@@ -78,6 +80,13 @@ class ManagedBot:
         # and wakes it out of any backoff sleep.
         self._stopping = False
         self._wake = threading.Event()
+        self._server_auth_lock = threading.Lock()
+        self._server_auth_credentials = None
+        self._server_auth_pending = None
+        self._server_auth_started_at = time.monotonic()
+        self._server_auth_login_attempted = False
+        self._server_auth_register_attempted = False
+        self._server_auth_complete = False
 
         self.client = self._new_client()
 
@@ -129,9 +138,9 @@ class ManagedBot:
     def _emit(self, type_: str, data=None) -> None:
         """Record + fan out an event. MUST run on the loop thread."""
         event = {"type": type_, "bot_id": self.id, "ts": time.time(), "data": data}
-        # Movement can arrive at the Minecraft tick rate. It belongs on the
-        # live stream, but retaining it would evict useful lifecycle history.
-        if type_ != "move":
+        # High-frequency UI snapshots belong on the live stream, but retaining
+        # them would evict useful lifecycle and chat history.
+        if type_ not in ("move", "action_bar", "stats", "inventory"):
             self._history.append(event)
         for q in list(self._subscribers):
             try:
@@ -180,7 +189,10 @@ class ManagedBot:
 
         @bot.on("chat")
         def _chat(name, params, raw):
-            self._emit_threadsafe("chat", {"packet": name, "params": _safe(params)})
+            event_type = "action_bar" if _is_action_bar(params) else "chat"
+            self._emit_threadsafe(
+                event_type, {"packet": name, "params": _safe(params)})
+            self._handle_server_auth_message(name, params)
 
         @bot.on("disconnect")
         def _disconnect(reason):
@@ -208,6 +220,75 @@ class ManagedBot:
         for _evt in ("window_items", "set_slot", "held_item_slot",
                      "open_window", "close_window"):
             bot.on(_evt, _inv)
+
+    # -- offline-server /login ---------------------------------------------
+    def set_server_auth(self, password: str, auto_register: bool = False) -> None:
+        """Keep browser-supplied credentials in memory for this process only."""
+        with self._server_auth_lock:
+            self._server_auth_credentials = {
+                "password": password,
+                "auto_register": bool(auto_register),
+            }
+            self._server_auth_login_attempted = False
+            self._server_auth_register_attempted = False
+            self._server_auth_complete = False
+        self._try_server_auth()
+
+    def clear_server_auth(self) -> None:
+        with self._server_auth_lock:
+            self._server_auth_credentials = None
+
+    def _handle_server_auth_message(self, packet_name, params) -> None:
+        # Signed/player-authored chat must never trigger a credential command.
+        if packet_name in ("player_chat", "profileless_chat"):
+            return
+        text = _chat_text(params)
+        if not text:
+            return
+        with self._server_auth_lock:
+            if _is_server_auth_success(text):
+                self._server_auth_complete = True
+                self._server_auth_pending = None
+                return
+            kind = _server_auth_prompt(text)
+            if kind is None:
+                return
+            if time.monotonic() - self._server_auth_started_at > SERVER_AUTH_PROMPT_WINDOW:
+                return
+            self._server_auth_pending = {"kind": kind, "text": text}
+        self._try_server_auth()
+
+    def _try_server_auth(self) -> None:
+        with self._server_auth_lock:
+            credentials = self._server_auth_credentials
+            pending = self._server_auth_pending
+            if (not credentials or not pending or self._server_auth_complete
+                    or self.client.online_mode is not False
+                    or self.client.state != "play"):
+                return
+            kind = pending["kind"]
+            if kind == "register" and not credentials["auto_register"]:
+                return
+            if kind == "login" and self._server_auth_login_attempted:
+                return
+            if kind == "register" and self._server_auth_register_attempted:
+                return
+            if kind == "login":
+                self._server_auth_login_attempted = True
+                command = f"/login {credentials['password']}"
+            else:
+                self._server_auth_register_attempted = True
+                command = _register_command(pending["text"], credentials["password"])
+
+        try:
+            self.client.chat(command)
+        except Exception as exc:  # noqa: BLE001 - report without exposing command
+            self._emit_threadsafe("error", {
+                "kind": "server_auth",
+                "message": f"automatic server {kind} failed: {exc}",
+            })
+        else:
+            self._emit_threadsafe("server_auth", {"action": f"{kind}_sent"})
 
     # -- snapshots ----------------------------------------------------------
     def player_state(self) -> dict:
@@ -307,6 +388,12 @@ class ManagedBot:
     def _reset_session(self) -> None:
         """Clear per-connection state at the start of each attempt."""
         self._session_disconnect_reason = None
+        with self._server_auth_lock:
+            self._server_auth_pending = None
+            self._server_auth_started_at = time.monotonic()
+            self._server_auth_login_attempted = False
+            self._server_auth_register_attempted = False
+            self._server_auth_complete = False
 
         def apply():
             self.connected_at = None
@@ -466,6 +553,80 @@ def _format_reason(reason) -> str:
             if isinstance(detail, str) and detail:
                 return detail
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _is_action_bar(params) -> bool:
+    if not isinstance(params, dict):
+        return False
+    position = params.get("position")
+    return (
+        params.get("isActionBar") is True
+        or params.get("overlay") is True
+        or position in (2, "action_bar", "game_info")
+    )
+
+
+def _chat_text(params) -> str:
+    if isinstance(params, str):
+        return _strip_minecraft_formatting(params)
+    if not isinstance(params, dict):
+        return ""
+    value = next((params[key] for key in (
+        "message", "content", "plainMessage", "unsignedContent", "text")
+        if params.get(key) is not None), "")
+    return re.sub(r"\s+", " ", _minecraft_text(value)).strip()
+
+
+def _minecraft_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _strip_minecraft_formatting(value)
+    if isinstance(value, (list, tuple)):
+        return "".join(_minecraft_text(part) for part in value)
+    if not isinstance(value, dict):
+        return str(value)
+    own = value.get("text") if isinstance(value.get("text"), str) else ""
+    translated = (
+        value.get("translate")
+        if not own and isinstance(value.get("translate"), str) else "")
+    return own + translated + _minecraft_text(value.get("extra"))
+
+
+def _strip_minecraft_formatting(value: str) -> str:
+    return re.sub(r"§[0-9a-fk-or]", "", value, flags=re.IGNORECASE)
+
+
+def _server_auth_prompt(text: str) -> str | None:
+    if re.search(
+            r"/register\b|please\s+register\b|"
+            r"you\s+(?:must|need to)\s+register\b|not\s+registered\b",
+            text, re.IGNORECASE):
+        return "register"
+    if re.search(
+            r"/login\b|please\s+log\s*in\b|please\s+login\b|"
+            r"you\s+(?:must|need to)\s+log\s*in\b|authentication\s+required",
+            text, re.IGNORECASE):
+        return "login"
+    return None
+
+
+def _is_server_auth_success(text: str) -> bool:
+    return bool(re.search(
+        r"successfully\s+(?:logged\s*in|registered|authenticated)|"
+        r"(?:login|registration|authentication)\s+successful|"
+        r"you\s+(?:are|have been)\s+(?:now\s+)?"
+        r"(?:logged\s*in|registered|authenticated)|already\s+logged\s*in",
+        text, re.IGNORECASE))
+
+
+def _register_command(prompt: str, password: str) -> str:
+    usage = re.search(r"/register\b([^\r\n]*)", prompt, re.IGNORECASE)
+    placeholders = re.findall(
+        r"<[^>]+>|\[[^\]]+\]", usage.group(1) if usage else "")
+    if len(placeholders) == 1:
+        return f"/register {password}"
+    return f"/register {password} {password}"
 
 
 def _connection_failure_message(state: str, exc=None) -> str:
