@@ -48,6 +48,7 @@ const api = {
 
 const state = {
   bots: [], selected: null, ws: null,
+  inventory: null,
   mapTimer: null, mapBusy: false, mapGeneration: 0,
   mapCenter: null, mapFollow: true, mapPosition: null, mapScale: 4,
   mapTarget: null, mapTiles: new Map(), mapManifest: new Map(),
@@ -139,7 +140,7 @@ async function loadState(id) {
 function resetPanels() {
   clearActionBar();
   $("#vitals").hidden = true;
-  $("#inv-grid").innerHTML = '<div class="muted inv-empty">no inventory data yet</div>';
+  renderInventory(null);
   $("#macro-bar").innerHTML = "";
 }
 
@@ -569,7 +570,13 @@ function fmtDuration(ticks) {
 
 // -- inventory --------------------------------------------------------------
 function renderInventory(inv) {
-  const grid = $("#inv-grid");
+  state.inventory = inv || null;
+  renderInventoryGrid($("#inv-grid"), inv);
+  renderInventoryGrid($("#vision-inventory-grid"), inv);
+  renderVisionHotbar(inv);
+}
+
+function renderInventoryGrid(grid, inv) {
   if (!inv || !inv.slots) {
     grid.innerHTML = '<div class="muted inv-empty">no inventory data yet</div>';
     return;
@@ -597,6 +604,14 @@ function renderInventory(inv) {
   hot.style.marginTop = "4px";
   for (let i = 36; i <= 44; i++) hot.append(cell(slots[i], i, held));
   grid.append(hot);
+}
+
+function renderVisionHotbar(inv) {
+  const hotbar = $("#vision-hotbar");
+  hotbar.replaceChildren();
+  const slots = inv?.slots || {};
+  const held = inv?.held_index;
+  for (let index = 36; index <= 44; index++) hotbar.append(cell(slots[index], index, held));
 }
 
 function cell(item, index, heldIndex) {
@@ -1123,6 +1138,7 @@ function openVisionModal() {
 function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
   closeVisionChat(false);
+  closeVisionInventory(false);
   stopVisionLookaround();
   stopVisionControl();
   stopFreecam();
@@ -1157,6 +1173,7 @@ const visionChat = {
   ignoreUnlock: false, ignoreUnlockTimer: null,
   escapeClosing: false, escapeResumeMode: null,
 };
+const visionInventory = { open: false, resumeMode: null };
 const VISION_CHAT_VISIBLE_MS = 12000;
 const VISION_CHAT_MAX_HISTORY = 50;
 const CONTROL_KEYS = new Set([
@@ -1329,6 +1346,7 @@ document.addEventListener("pointerlockchange", () => {
     return;
   }
   if (visionChat.open && !locked) return;
+  if (visionInventory.open && !locked) return;
   if (!locked && (visionControl.lockPending || freecam.lockPending
       || visionLookaround.lockPending)) return;
   if (visionControl.active) {
@@ -1388,6 +1406,7 @@ $("#vision-lookaround").addEventListener("change", (e) => {
   if (e.target.checked) startVisionLookaround();
   else stopVisionLookaround();
 });
+$("#vision-inventory-close").addEventListener("click", () => closeVisionInventory(true));
 document.addEventListener("keydown", (e) => {
   if (!visionControl.active) return;
   if (e.key === "Escape") {
@@ -1492,6 +1511,40 @@ function closeVisionChat(resume = true) {
   else if (returnMenu && freecam.active) showVisionMenu("freecam");
 }
 
+function openVisionInventory() {
+  if (visionInventory.open || $("#vision-modal").hidden
+      || !$("#control-menu").hidden) return;
+  visionInventory.open = true;
+  visionInventory.resumeMode = visionControl.active && !visionControl.paused
+    ? "control"
+    : (freecam.active && !freecam.paused ? "freecam" : null);
+  if (visionControl.active) {
+    visionControl.paused = true;
+    visionControl.keys.clear();
+    sendVisionControl();
+    setControlUi(true);
+  }
+  if (freecam.active) {
+    freecam.paused = true;
+    FREECAM_KEYS.forEach(key => Vision.setFreecamKey(key, false));
+    $("#vision-crosshair").hidden = true;
+  }
+  if (visionLookaround.active) stopVisionLookaround();
+  $("#vision-inventory").hidden = false;
+  if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
+}
+
+function closeVisionInventory(resume = true) {
+  if (!visionInventory.open) return;
+  const resumeMode = visionInventory.resumeMode;
+  visionInventory.open = false;
+  visionInventory.resumeMode = null;
+  $("#vision-inventory").hidden = true;
+  if (!resume) return;
+  if (resumeMode === "control") resumeVisionControl(false);
+  else if (resumeMode === "freecam") resumeFreecam(false);
+}
+
 $("#vision-chat-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("#vision-chat-input");
@@ -1545,8 +1598,27 @@ document.addEventListener("keyup", (e) => {
   else if (resumeMode === "freecam") resumeFreecam(false);
 }, true);
 
+document.addEventListener("keydown", (e) => {
+  if (!visionInventory.open || e.key !== "Escape") return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  closeVisionInventory(true);
+}, true);
+
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "KeyE" || $("#vision-modal").hidden || visionChat.open) return;
+  const target = e.target;
+  const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement;
+  if (typing) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (visionInventory.open) closeVisionInventory(true);
+  else openVisionInventory();
+}, true);
+
 Vision.element().addEventListener("click", () => {
-  if (visionChat.open || !$("#control-menu").hidden) return;
+  if (visionChat.open || visionInventory.open || !$("#control-menu").hidden) return;
   if (visionControl.active && visionControl.paused) resumeVisionControl();
   else if (freecam.active && freecam.paused) resumeFreecam();
 });

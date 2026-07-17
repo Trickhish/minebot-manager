@@ -219,6 +219,15 @@
       </div>
       <div class="vision-stage" id="vision-stage">
         <div class="vision-crosshair" id="vision-crosshair" hidden></div>
+        <div class="vision-hotbar" id="vision-hotbar" aria-label="Hotbar"></div>
+        <div class="vision-inventory" id="vision-inventory" hidden>
+          <div class="vision-inventory-panel" role="dialog" aria-modal="true" aria-label="Inventory">
+            <button class="vision-inventory-close" id="vision-inventory-close" type="button" title="Close inventory" aria-label="Close inventory">✕</button>
+            <div class="inv-grid" id="vision-inventory-grid">
+              <div class="muted inv-empty">no inventory data yet</div>
+            </div>
+          </div>
+        </div>
         <div class="vision-chat" id="vision-chat">
           <div class="vision-chat-messages" id="vision-chat-messages" aria-live="polite"></div>
           <form class="vision-chat-form" id="vision-chat-form" hidden>
@@ -310,6 +319,6 @@
   </div>
 
   <script src="vision.js?v=20260717-lookaround"></script>
-  <script src="app.js?v=20260717-lookaround"></script>
+  <script src="app.js?v=20260717-vision-inventory"></script>
 </body>
 </html>
