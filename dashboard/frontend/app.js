@@ -275,10 +275,21 @@ function describeChat(data) {
   if (typeof p === "string") return p;
   // Common shapes: {message}, {content}, {plainMessage}, {senderName, message}
   const msg = p.message ?? p.content ?? p.plainMessage ?? p.unsignedContent;
+  const senderValue = p.senderName
+    ?? (data.packet === "player_chat" ? p.networkName : null)
+    ?? (data.packet === "profileless_chat" ? p.name : null);
+  const sender = plainMinecraftText(senderValue).replace(/\s+/g, " ").trim();
+  const withSender = message => {
+    if (!sender) return message;
+    const prefixes = [`<${sender}>`, `${sender}:`, `${sender} »`];
+    return prefixes.some(prefix => message.startsWith(prefix))
+      ? message
+      : `<${sender}> ${message}`;
+  };
   if (msg != null && typeof msg !== "object") {
-    return p.senderName ? `<${fmt(p.senderName)}> ${fmt(msg)}` : fmt(msg);
+    return withSender(fmt(msg));
   }
-  if (msg != null) return plainMinecraftText(msg);
+  if (msg != null) return withSender(plainMinecraftText(msg));
   return fmt(p);
 }
 
@@ -1388,7 +1399,10 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopImmediatePropagation();
-      closeVisionChat(true);
+      // Browsers reject pointer-lock requests made from the same Escape that
+      // released chat. Keep the game menu closed and reacquire on canvas click.
+      closeVisionChat(false);
+      $("#control-menu").hidden = true;
     }
     return;
   }
@@ -1399,6 +1413,12 @@ document.addEventListener("keydown", (e) => {
   e.stopImmediatePropagation();
   openVisionChat();
 }, true);
+
+Vision.element().addEventListener("click", () => {
+  if (visionChat.open || !$("#control-menu").hidden) return;
+  if (visionControl.active && visionControl.paused) resumeVisionControl();
+  else if (freecam.active && freecam.paused) resumeFreecam();
+});
 
 setInterval(() => {
   if (!visionChat.open && !$("#vision-modal").hidden) renderVisionChat();
