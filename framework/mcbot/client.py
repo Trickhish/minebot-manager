@@ -30,7 +30,7 @@ from .blocks import get_block_table
 from .buffer import BufferUnderrun
 from .connection import Connection
 from .inventory import Inventory, make_slot_value
-from .items import get_item_table
+from .items import ItemTable, get_item_table
 from .pathfinding import find_path
 from .protocol import (
     Protocol,
@@ -538,8 +538,15 @@ class Client:
             self.send("select_known_packs", {"packs": []})
         elif name == "registry_data":
             params = self._decode(name, raw)
-            if params.get("id", "").removeprefix("minecraft:") == "dimension_type":
+            registry_id = params.get("id", "").removeprefix("minecraft:")
+            if registry_id == "dimension_type":
                 self._dimension_types = [entry.get("value") for entry in params["entries"]]
+            elif registry_id == "item":
+                # Modern stack IDs index the server-sent registry. Do not rely
+                # on a nearby vanilla release table: proxies and data packs can
+                # reorder entries while keeping the same wire protocol.
+                self.inventory = Inventory(ItemTable.from_registry(
+                    self.protocol.version, params.get("entries", [])))
         elif name == "finish_configuration":
             self.send("finish_configuration", {})
             self._set_state("play")
