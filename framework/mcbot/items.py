@@ -11,9 +11,7 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "data", "pc")
 
 # Versions without their own vendored table borrow the nearest one. New item
 # types added after the borrowed version's release will resolve as "unknown".
-_FALLBACK = {
-    "26.2": "1.21.11",
-}
+_FALLBACK: dict[str, str] = {}
 
 _cache: dict[str, "ItemTable"] = {}
 
