@@ -1227,17 +1227,27 @@ function showVisionMenu(mode) {
   $("#control-menu").hidden = false;
 }
 
-function resumeVisionControl() {
+function keepVisionControlPaused() {
+  if (!visionControl.active) return;
+  visionControl.paused = true;
+  visionControl.keys.clear();
+  sendVisionControl();
+  $("#control-menu").hidden = true;
+  setControlUi(true);
+}
+
+function resumeVisionControl(showMenuOnFailure = true) {
   if (!visionControl.active || !visionControl.paused) return;
   const target = Vision.element();
+  const onFailure = showMenuOnFailure ? pauseVisionControl : keepVisionControlPaused;
   visionControl.paused = false;
   $("#control-menu").hidden = true;
   setControlUi(true);
   try {
     const lock = target.requestPointerLock();
-    if (lock && typeof lock.catch === "function") lock.catch(pauseVisionControl);
+    if (lock && typeof lock.catch === "function") lock.catch(onFailure);
   } catch {
-    pauseVisionControl();
+    onFailure();
   }
 }
 
@@ -1399,10 +1409,18 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopImmediatePropagation();
-      // Browsers reject pointer-lock requests made from the same Escape that
-      // released chat. Keep the game menu closed and reacquire on canvas click.
+      const resumeMode = visionControl.active
+        ? "control"
+        : (freecam.active ? "freecam" : null);
       closeVisionChat(false);
       $("#control-menu").hidden = true;
+      // Request lock after Escape's default handling, which otherwise releases
+      // a lock acquired synchronously from this key event.
+      setTimeout(() => {
+        if (visionChat.open || !$("#control-menu").hidden) return;
+        if (resumeMode === "control") resumeVisionControl(false);
+        else if (resumeMode === "freecam") resumeFreecam(false);
+      }, 0);
     }
     return;
   }
@@ -1488,17 +1506,26 @@ function pauseFreecam() {
   if (document.pointerLockElement === Vision.element()) document.exitPointerLock();
 }
 
-function resumeFreecam() {
+function keepFreecamPaused() {
+  if (!freecam.active) return;
+  freecam.paused = true;
+  FREECAM_KEYS.forEach(key => Vision.setFreecamKey(key, false));
+  $("#control-menu").hidden = true;
+  $("#vision-crosshair").hidden = true;
+}
+
+function resumeFreecam(showMenuOnFailure = true) {
   if (!freecam.active || !freecam.paused) return;
   const target = Vision.element();
+  const onFailure = showMenuOnFailure ? pauseFreecam : keepFreecamPaused;
   freecam.paused = false;
   $("#control-menu").hidden = true;
   $("#vision-crosshair").hidden = false;
   try {
     const lock = target.requestPointerLock?.();
-    if (lock && typeof lock.catch === "function") lock.catch(pauseFreecam);
+    if (lock && typeof lock.catch === "function") lock.catch(onFailure);
   } catch {
-    pauseFreecam();
+    onFailure();
   }
 }
 
