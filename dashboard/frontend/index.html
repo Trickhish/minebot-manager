@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260716-offline-auth">
+  <link rel="stylesheet" href="style.css?v=20260717-map-navigation">
 </head>
 <body>
   <header>
@@ -95,16 +95,28 @@
                 <span class="map-title">Minimap</span>
                 <label class="map-radius">radius
                   <select id="map-radius">
+                    <option value="16">16</option>
                     <option value="32">32</option>
+                    <option value="48">48</option>
                     <option value="64" selected>64</option>
                     <option value="96">96</option>
                     <option value="128">128</option>
+                    <option value="192">192</option>
+                    <option value="256">256</option>
                   </select>
                 </label>
                 <label class="map-live"><input type="checkbox" id="map-live" checked> live</label>
+                <div class="map-tools">
+                  <button id="map-zoom-out" class="mini map-tool" title="Zoom out" aria-label="Zoom out">−</button>
+                  <button id="map-recenter" class="mini map-tool" title="Center on bot" aria-label="Center on bot">⌖</button>
+                  <button id="map-zoom-in" class="mini map-tool" title="Zoom in" aria-label="Zoom in">+</button>
+                  <button id="map-expand" class="mini map-tool" title="Expand minimap" aria-label="Expand minimap">⛶</button>
+                </div>
               </div>
-              <div class="map-view">
+              <div class="map-view" id="map-view">
                 <img id="map-img" alt="minimap">
+                <div class="map-target" id="map-target" hidden></div>
+                <div class="map-readout" id="map-readout" hidden></div>
                 <div class="map-status" id="map-status">waiting for chunks…</div>
               </div>
             </div>
@@ -236,6 +248,21 @@
     </div>
   </div>
 
+  <div class="modal" id="map-modal" hidden>
+    <div class="modal-box map-modal-box">
+      <div class="modal-head">
+        <h2>Minimap</h2>
+        <button class="modal-close" id="map-modal-close">✕</button>
+      </div>
+      <div class="map-stage" id="map-stage">
+        <div class="map-pip" id="map-pip">
+          <div class="map-pip-label">Bot view</div>
+          <div class="map-pip-stage" id="map-pip-stage"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="inventory-modal" hidden>
     <div class="modal-box inventory-modal-box">
       <div class="modal-head">
@@ -271,6 +298,6 @@
   </div>
 
   <script src="vision.js?v=20260716-control-menu"></script>
-  <script src="app.js?v=20260716-offline-auth"></script>
+  <script src="app.js?v=20260717-map-navigation"></script>
 </body>
 </html>

@@ -33,6 +33,11 @@ class ServerAuthRequest(BaseModel):
     auto_register: bool = False
 
 
+class NavigateRequest(BaseModel):
+    x: float = Field(ge=-30_000_000, le=30_000_000)
+    z: float = Field(ge=-30_000_000, le=30_000_000)
+
+
 class BotStatus(BaseModel):
     id: str
     username: str

@@ -180,6 +180,9 @@ class Client:
         self._control_until = 0.0
         self._control_velocity_y = 0.0
         self._control_jump_held = False
+        self._navigation_lock = threading.Lock()
+        self._navigation_generation = 0
+        self._navigation_active = None
 
         # -- world state --------------------------------------------------
         # None when this version's chunk format or block table isn't supported.
@@ -362,6 +365,7 @@ class Client:
         self.running = False
         self._position_stop.set()
         self._world_stop.set()
+        self.cancel_navigation()
         self.stop_live_map()
         self.stop_stream_server()
         self.conn.close()
@@ -954,6 +958,86 @@ class Client:
             self.emit("move", self.get_position())
             _time.sleep(tick)
 
+    def navigate_to(self, x, z):
+        """Start replaceable, collision-aware direct walking toward an X/Z target."""
+        x, z = float(x), float(z)
+        with self._navigation_lock:
+            self._navigation_generation += 1
+            generation = self._navigation_generation
+            self._navigation_active = generation
+        thread = threading.Thread(
+            target=self._navigate_loop, args=(generation, x, z), daemon=True,
+            name=f"navigate-{self.username}")
+        thread.start()
+        return generation
+
+    def cancel_navigation(self):
+        with self._navigation_lock:
+            if self._navigation_active is None:
+                return False
+            self._navigation_generation += 1
+            self._navigation_active = None
+            return True
+
+    def _navigate_loop(self, generation, target_x, target_z):
+        target = {"x": target_x, "z": target_z}
+        def event(phase):
+            return {"phase": phase, "target": target,
+                    "navigation_id": generation}
+        self.emit("navigation", event("started"))
+        started = _time.monotonic()
+        best_distance = float("inf")
+        last_progress = started
+        max_seconds = None
+        tick = 0
+
+        while self.running and self.state == "play":
+            with self._navigation_lock:
+                cancelled = self._navigation_active != generation
+            if cancelled:
+                self.emit("navigation", event("cancelled"))
+                return
+            position = self.get_position()
+            dx, dz = target_x - position["x"], target_z - position["z"]
+            distance = math.hypot(dx, dz)
+            if distance <= 0.7:
+                self._finish_navigation(generation)
+                self.emit("navigation", event("arrived"))
+                return
+            if max_seconds is None:
+                max_seconds = max(15.0, distance / max(self.walk_speed, 0.1) * 3.0)
+
+            now = _time.monotonic()
+            if distance < best_distance - 0.2:
+                best_distance = distance
+                last_progress = now
+            elif now - last_progress > 5.0:
+                self._finish_navigation(generation)
+                self.emit("navigation", event("stuck"))
+                return
+
+            if now - started > max_seconds:
+                self._finish_navigation(generation)
+                self.emit("navigation", event("stuck"))
+                return
+
+            yaw = math.degrees(math.atan2(-dx, dz))
+            # Periodic jump pulses clear ordinary one-block terrain. Navigation
+            # is direct steering, so larger obstacles still report "stuck".
+            jump = (now - last_progress > 0.8 and tick % 10 == 0
+                    and bool(position.get("on_ground")))
+            self.control_step(1.0, 0.0, jump, False, yaw, 0.0, 0.05)
+            tick += 1
+            _time.sleep(0.05)
+
+        self._finish_navigation(generation)
+        self.emit("navigation", event("cancelled"))
+
+    def _finish_navigation(self, generation):
+        with self._navigation_lock:
+            if self._navigation_active == generation:
+                self._navigation_active = None
+
     def _apply_multi_block_change(self, params):
         coords = params["chunkCoordinates"]
         section_x, section_y, section_z = coords["x"], coords["y"], coords["z"]
@@ -1056,9 +1140,10 @@ class Client:
         return self.world.nearby_blocks(x, y, z, radius, include_air=include_air)
 
     # -- map rendering ---------------------------------------------------
-    def render_map(self, radius=64, resource_pack=None):
+    def render_map(self, radius=64, resource_pack=None, center_x=None, center_z=None):
         """A numpy uint8 (H, W, 3) top-down map of loaded chunks centered on
-        the bot. Requires numpy (`pip install numpy`) and world tracking.
+        the bot or an explicit X/Z point. Requires numpy (`pip install numpy`)
+        and world tracking.
         `resource_pack`: an optional `ResourcePack` (see `resourcepack.py`) to
         color blocks from real textures instead of the built-in
         approximations; defaults to `self.resource_pack` if set."""
@@ -1067,7 +1152,9 @@ class Client:
             raise ValueError("render_map requires world tracking (unsupported for this version)")
         with self._position_lock:
             pos = (self.position["x"], self.position["y"], self.position["z"])
-        return render_top_down(self.world, int(pos[0]), int(pos[2]), radius, bot_position=pos,
+        map_x = int(pos[0]) if center_x is None else int(center_x)
+        map_z = int(pos[2]) if center_z is None else int(center_z)
+        return render_top_down(self.world, map_x, map_z, radius, bot_position=pos,
                                 resource_pack=resource_pack or self.resource_pack)
 
     def save_map(self, path, radius=64, resource_pack=None):

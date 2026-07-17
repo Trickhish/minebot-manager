@@ -221,6 +221,10 @@ class ManagedBot:
         def _stats(snapshot):
             self._emit_threadsafe("stats", _safe(snapshot))
 
+        @bot.on("navigation")
+        def _navigation(info):
+            self._emit_threadsafe("navigation", _safe(info))
+
         def _inv(*_a):
             self._emit_threadsafe("inventory", self.inventory_snapshot())
         for _evt in ("window_items", "set_slot", "held_item_slot",

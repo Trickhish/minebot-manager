@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, Response
 
 from macros import MacroEngine, MacroError
 from manager import BotManager
-from models import ChatRequest, CreateBotRequest, ServerAuthRequest
+from models import ChatRequest, CreateBotRequest, NavigateRequest, ServerAuthRequest
 from textures import TILE, TextureAtlas
 
 from mcbot.protocol import available_versions
@@ -129,6 +129,20 @@ async def clear_server_auth(bot_id: str):
     return {"ok": True}
 
 
+@app.post("/api/bots/{bot_id}/navigate")
+async def navigate_bot(bot_id: str, req: NavigateRequest):
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    if bot.state != "play":
+        raise HTTPException(409, f"bot not in play state (state={bot.state})")
+    if bot.control_owner is not None:
+        raise HTTPException(409, "exit first-person control before map navigation")
+    navigation_id = bot.client.navigate_to(req.x, req.z)
+    return {"ok": True, "navigation_id": navigation_id,
+            "target": {"x": req.x, "z": req.z}}
+
+
 @app.post("/api/bots/{bot_id}/stop")
 async def stop_bot(bot_id: str):
     bot = manager.get(bot_id)
@@ -165,10 +179,11 @@ async def bot_state(bot_id: str):
 
 
 @app.get("/api/bots/{bot_id}/map.png")
-async def bot_map(bot_id: str, radius: int = 64):
-    """A top-down PNG minimap centered on the bot. Rendered on demand from the
-    bot's live world; the frontend polls this. 503 while the world isn't ready
-    (wrong version, not in play, or no chunks parsed yet)."""
+async def bot_map(bot_id: str, radius: int = 64,
+                  center_x: int | None = None, center_z: int | None = None):
+    """A top-down PNG minimap centered on the bot or an explicit X/Z point.
+    Rendered on demand from the live world; the frontend polls this. 503 while
+    the world isn't ready (wrong version, not in play, or no chunks parsed)."""
     bot = manager.get(bot_id)
     if bot is None:
         raise HTTPException(404, "no such bot")
@@ -176,20 +191,33 @@ async def bot_map(bot_id: str, radius: int = 64):
         raise HTTPException(503, "world tracking unavailable for this bot/version")
     if bot.state != "play":
         raise HTTPException(503, f"bot not in play state (state={bot.state})")
+    if (center_x is None) != (center_z is None):
+        raise HTTPException(400, "center_x and center_z must be provided together")
     radius = max(8, min(256, radius))
+    if center_x is None:
+        position = bot.client.get_position()
+        center_x, center_z = int(position["x"]), int(position["z"])
+    center_x = max(-30_000_000, min(30_000_000, center_x))
+    center_z = max(-30_000_000, min(30_000_000, center_z))
     # render_map is CPU-bound (numpy) and reads world state the bot's pump
     # thread mutates -- run it off the event loop and tolerate transient races.
     try:
-        png = await asyncio.to_thread(_render_png, bot, radius)
+        png = await asyncio.to_thread(_render_png, bot, radius, center_x, center_z)
     except Exception as exc:  # noqa: BLE001 - transient (chunk churn) or not-ready
         raise HTTPException(503, f"map not ready: {type(exc).__name__}")
     return Response(png, media_type="image/png",
-                    headers={"Cache-Control": "no-store"})
+                    headers={
+                        "Cache-Control": "no-store",
+                        "X-Map-Center-X": str(center_x),
+                        "X-Map-Center-Z": str(center_z),
+                        "X-Map-Radius": str(radius),
+                    })
 
 
-def _render_png(bot, radius: int) -> bytes:
+def _render_png(bot, radius: int, center_x: int, center_z: int) -> bytes:
     from mcbot.render import encode_png
-    return encode_png(bot.client.render_map(radius=radius))
+    return encode_png(bot.client.render_map(
+        radius=radius, center_x=center_x, center_z=center_z))
 
 
 @app.get("/api/textures/atlas.json")
@@ -398,6 +426,7 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
                 if bot.control_owner is owner:
                     bot.control_owner = None
                 continue
+            bot.client.cancel_navigation()
             bot.control_owner = owner
             controls.update(
                 active=True,

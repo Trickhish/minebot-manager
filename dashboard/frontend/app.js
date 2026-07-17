@@ -33,12 +33,25 @@ const api = {
     if (!r.ok && r.status !== 404)
       throw new Error((await r.json()).detail || r.statusText);
   },
+  async navigate(id, x, z) {
+    const r = await fetch(`api/bots/${id}/navigate`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ x, z }),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    return r.json();
+  },
   stop(id) { return fetch(`api/bots/${id}/stop`, { method: "POST" }); },
   connect(id) { return fetch(`api/bots/${id}/connect`, { method: "POST" }); },
   remove(id) { return fetch(`api/bots/${id}`, { method: "DELETE" }); },
 };
 
-const state = { bots: [], selected: null, ws: null, mapTimer: null, mapUrl: null, mapBusy: false };
+const state = {
+  bots: [], selected: null, ws: null,
+  mapTimer: null, mapUrl: null, mapBusy: false, mapPending: false,
+  mapCenter: null, mapFrame: null, mapFollow: true, mapPosition: null,
+  mapTarget: null,
+};
 const VISION_SMALL_REFRESH_MS = 30000;
 const VISION_FULL_REFRESH_MS = 1800;
 const ACTION_BAR_TTL_MS = 5000;
@@ -91,6 +104,7 @@ function selectBot(id) {
   stopVisionControl();
   resetVisionTools();
   closeServerAuthModal();
+  closeMapModal();
   if (state.ws) { state.ws.close(); state.ws = null; }
   stopMap();
   Vision.detach();
@@ -159,6 +173,7 @@ function onLiveEvent(ev) {
   if ((ev.type === "spawn" || ev.type === "move") && bot) { applyPosition(ev.data); Vision.setPose(ev.data); }
   if (ev.type === "stats") { renderVitals(ev.data); if (ev.data.position) { applyPosition(ev.data.position); Vision.setPose(ev.data.position); } }
   if (ev.type === "inventory") renderInventory(ev.data);
+  if (ev.type === "navigation") applyNavigation(ev.data);
   if (ev.type === "macro" && (ev.data.phase === "started" || ev.data.phase === "finished"
       || ev.data.phase === "cancelled")) loadMacroBar(ev.bot_id);
   if (ev.type === "error") { $("#detail-error").textContent = ev.data.message; applyStatusPartial("error"); }
@@ -187,6 +202,7 @@ function applyStatusPartial(stateName, data) {
 
 function applyPosition(p) {
   if (!p || p.x == null) return;
+  state.mapPosition = { x: p.x, z: p.z };
   $("#d-position").textContent =
     `x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  z ${p.z.toFixed(1)}  ` +
     `(yaw ${Math.round(p.yaw)}°)`;
@@ -228,6 +244,11 @@ function logEvent(ev) {
     register_sent: "automatic server registration sent",
     login_sent: "automatic server login sent",
   }[ev.data.action] || fmt(ev.data);
+  else if (type === "navigation") {
+    const target = ev.data.target;
+    text = `${ev.data.phase} map navigation` +
+      (target ? ` to x ${target.x.toFixed(1)} z ${target.z.toFixed(1)}` : "");
+  }
   else if (type === "ready") text = "entered play state";
   else if (type === "macro") {
     const d = ev.data;
@@ -238,7 +259,7 @@ function logEvent(ev) {
 }
 
 function tagFor(type) {
-  return { chat: "CHAT", state: "STATE", error: "ERR", auth: "AUTH", protocol: "PROTO", server_auth: "LOGIN", spawn: "SPAWN",
+  return { chat: "CHAT", state: "STATE", error: "ERR", auth: "AUTH", protocol: "PROTO", server_auth: "LOGIN", navigation: "NAV", spawn: "SPAWN",
            disconnect: "DISC", ready: "READY", macro: "MACRO" }[type] || type.toUpperCase();
 }
 
@@ -578,10 +599,19 @@ function abbrev(name) {
 
 // -- minimap ----------------------------------------------------------------
 const MAP_INTERVAL = 1500;
+const MAP_RADII = [16, 32, 48, 64, 96, 128, 192, 256];
+const mapDrag = { active: false, moved: false, x: 0, y: 0, center: null };
 
 function startMap() {
+  state.mapCenter = null;
+  state.mapFrame = null;
+  state.mapFollow = true;
+  state.mapPosition = null;
+  state.mapTarget = null;
+  state.mapPending = false;
+  updateMapTarget();
   setMapStatus("waiting for chunks…");
-  tickMap();
+  tickMap(true);
   state.mapTimer = setInterval(tickMap, MAP_INTERVAL);
 }
 
@@ -590,26 +620,50 @@ function stopMap() {
   if (state.mapUrl) { URL.revokeObjectURL(state.mapUrl); state.mapUrl = null; }
   const img = $("#map-img");
   img.classList.remove("ready");
+  img.style.transform = "";
   img.removeAttribute("src");
 }
 
-async function tickMap() {
+async function tickMap(force = false) {
   const id = state.selected;
-  if (!id || state.mapBusy) return;
-  if (!$("#map-live").checked) return;
+  if (!id) return;
+  if (state.mapBusy) { state.mapPending = state.mapPending || force; return; }
+  if (!force && !$("#map-live").checked) return;
   state.mapBusy = true;
   try {
-    const radius = $("#map-radius").value;
-    const r = await fetch(`api/bots/${id}/map.png?radius=${radius}`, { cache: "no-store" });
+    const radius = Number($("#map-radius").value);
+    let center = state.mapCenter;
+    if (state.mapFollow && state.mapPosition)
+      center = { x: Math.floor(state.mapPosition.x), z: Math.floor(state.mapPosition.z) };
+    const query = new URLSearchParams({ radius });
+    if (center) {
+      query.set("center_x", Math.round(center.x));
+      query.set("center_z", Math.round(center.z));
+    }
+    const r = await fetch(`api/bots/${id}/map.png?${query}`, { cache: "no-store" });
     if (state.selected !== id) return;
     if (r.status === 200) {
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
       const img = $("#map-img");
       img.src = url;
+      await img.decode().catch(() => {});
+      if (state.selected !== id) {
+        URL.revokeObjectURL(url);
+        return;
+      }
       img.classList.add("ready");
       if (state.mapUrl) URL.revokeObjectURL(state.mapUrl);
       state.mapUrl = url;
+      state.mapFrame = {
+        x: Number(r.headers.get("X-Map-Center-X")),
+        z: Number(r.headers.get("X-Map-Center-Z")),
+        radius: Number(r.headers.get("X-Map-Radius")),
+      };
+      if (!state.mapCenter || state.mapFollow)
+        state.mapCenter = { x: state.mapFrame.x, z: state.mapFrame.z };
+      img.style.transform = "";
+      requestAnimationFrame(updateMapTarget);
       setMapStatus(null);
     } else {
       // 503 while the world isn't ready — keep the last frame if we have one.
@@ -619,7 +673,13 @@ async function tickMap() {
       }
     }
   } catch { /* transient; next tick retries */ }
-  finally { state.mapBusy = false; }
+  finally {
+    state.mapBusy = false;
+    if (state.mapPending) {
+      state.mapPending = false;
+      tickMap(true);
+    }
+  }
 }
 
 function setMapStatus(text) {
@@ -628,9 +688,192 @@ function setMapStatus(text) {
   el.classList.toggle("hidden", !text);
 }
 
-$("#map-radius").addEventListener("change", () => { if (state.selected) tickMap(); });
+function mapPoint(clientX, clientY, frame = state.mapFrame) {
+  const rect = $("#map-img").getBoundingClientRect();
+  if (!frame || !rect.width || clientX < rect.left || clientX > rect.right ||
+      clientY < rect.top || clientY > rect.bottom) return null;
+  const size = frame.radius * 2 + 1;
+  return {
+    x: frame.x + ((clientX - rect.left) / rect.width - 0.5) * size,
+    z: frame.z + ((clientY - rect.top) / rect.height - 0.5) * size,
+    rect,
+  };
+}
+
+function setMapRadius(radius, anchorX = null, anchorY = null) {
+  const oldFrame = state.mapFrame;
+  const oldPoint = anchorX == null ? null : mapPoint(anchorX, anchorY, oldFrame);
+  const next = MAP_RADII.reduce((best, value) =>
+    Math.abs(value - radius) < Math.abs(best - radius) ? value : best, MAP_RADII[0]);
+  $("#map-radius").value = String(next);
+  if (oldPoint && oldFrame) {
+    const rect = oldPoint.rect;
+    const nextSize = next * 2 + 1;
+    state.mapCenter = {
+      x: oldPoint.x - ((anchorX - rect.left) / rect.width - 0.5) * nextSize,
+      z: oldPoint.z - ((anchorY - rect.top) / rect.height - 0.5) * nextSize,
+    };
+    state.mapFollow = false;
+  }
+  tickMap(true);
+}
+
+function zoomMap(direction, clientX = null, clientY = null) {
+  const current = Number($("#map-radius").value);
+  const index = MAP_RADII.indexOf(current);
+  const nextIndex = Math.max(0, Math.min(MAP_RADII.length - 1, index + direction));
+  if (nextIndex !== index) setMapRadius(MAP_RADII[nextIndex], clientX, clientY);
+}
+
+function recenterMap() {
+  state.mapFollow = true;
+  state.mapCenter = state.mapPosition
+    ? { x: state.mapPosition.x, z: state.mapPosition.z } : null;
+  tickMap(true);
+}
+
+function updateMapTarget() {
+  const marker = $("#map-target");
+  const target = state.mapTarget;
+  const frame = state.mapFrame;
+  const img = $("#map-img");
+  const view = $("#map-view");
+  if (!target || !frame || !img.classList.contains("ready")) {
+    marker.hidden = true;
+    return;
+  }
+  const rect = img.getBoundingClientRect();
+  const viewRect = view.getBoundingClientRect();
+  const size = frame.radius * 2 + 1;
+  const px = (target.x - frame.x) / size + 0.5;
+  const pz = (target.z - frame.z) / size + 0.5;
+  if (px < 0 || px > 1 || pz < 0 || pz > 1) {
+    marker.hidden = true;
+    return;
+  }
+  marker.style.left = `${rect.left - viewRect.left + px * rect.width}px`;
+  marker.style.top = `${rect.top - viewRect.top + pz * rect.height}px`;
+  marker.className = `map-target ${target.phase || "started"}`;
+  marker.hidden = false;
+}
+
+function applyNavigation(data) {
+  if (!data?.target) return;
+  if ((state.mapTarget?.navigationId || 0) > (data.navigation_id || 0)) return;
+  state.mapTarget = {
+    ...data.target, phase: data.phase, navigationId: data.navigation_id || 0,
+  };
+  updateMapTarget();
+}
+
+async function navigateFromMap(point) {
+  if (!state.selected) return;
+  const target = { x: Math.floor(point.x) + 0.5, z: Math.floor(point.z) + 0.5 };
+  state.mapTarget = { ...target, phase: "started" };
+  updateMapTarget();
+  try {
+    await api.navigate(state.selected, target.x, target.z);
+  } catch (error) {
+    state.mapTarget.phase = "stuck";
+    updateMapTarget();
+    logSystem(`map navigation failed: ${error.message}`);
+  }
+}
+
+const mapView = $("#map-view");
+mapView.addEventListener("pointerdown", (event) => {
+  if (!mapPoint(event.clientX, event.clientY)) return;
+  mapDrag.active = true;
+  mapDrag.moved = false;
+  mapDrag.x = event.clientX;
+  mapDrag.y = event.clientY;
+  mapDrag.center = { ...(state.mapFrame || state.mapCenter) };
+  mapView.setPointerCapture(event.pointerId);
+});
+mapView.addEventListener("pointermove", (event) => {
+  const point = mapPoint(event.clientX, event.clientY);
+  const readout = $("#map-readout");
+  if (point) {
+    readout.textContent = `x ${Math.floor(point.x)}  z ${Math.floor(point.z)}`;
+    readout.hidden = false;
+  } else if (!mapDrag.active) readout.hidden = true;
+  if (!mapDrag.active) return;
+  const dx = event.clientX - mapDrag.x;
+  const dy = event.clientY - mapDrag.y;
+  if (Math.hypot(dx, dy) > 5) mapDrag.moved = true;
+  if (mapDrag.moved) {
+    mapView.classList.add("dragging");
+    $("#map-img").style.transform = `translate(${dx}px, ${dy}px)`;
+  }
+});
+mapView.addEventListener("pointerup", (event) => {
+  if (!mapDrag.active) return;
+  const dx = event.clientX - mapDrag.x;
+  const dy = event.clientY - mapDrag.y;
+  mapDrag.active = false;
+  mapView.classList.remove("dragging");
+  if (mapDrag.moved && state.mapFrame) {
+    const rect = $("#map-img").getBoundingClientRect();
+    const size = state.mapFrame.radius * 2 + 1;
+    state.mapCenter = {
+      x: mapDrag.center.x - dx * size / rect.width,
+      z: mapDrag.center.z - dy * size / rect.height,
+    };
+    state.mapFollow = false;
+    $("#map-img").style.transform = "";
+    tickMap(true);
+  } else {
+    const point = mapPoint(event.clientX, event.clientY);
+    if (point) navigateFromMap(point);
+  }
+});
+mapView.addEventListener("pointercancel", () => {
+  mapDrag.active = false;
+  mapView.classList.remove("dragging");
+  $("#map-img").style.transform = "";
+});
+mapView.addEventListener("pointerleave", () => {
+  if (!mapDrag.active) $("#map-readout").hidden = true;
+});
+mapView.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  zoomMap(event.deltaY > 0 ? 1 : -1, event.clientX, event.clientY);
+}, { passive: false });
+
+$("#map-radius").addEventListener("change", (event) => {
+  setMapRadius(Number(event.target.value));
+});
+$("#map-zoom-out").addEventListener("click", () => zoomMap(1));
+$("#map-zoom-in").addEventListener("click", () => zoomMap(-1));
+$("#map-recenter").addEventListener("click", recenterMap);
 $("#map-live").addEventListener("change", (e) => {
-  if (e.target.checked && state.selected) tickMap();
+  if (e.target.checked && state.selected) tickMap(true);
+});
+
+function openMapModal() {
+  if (!state.selected) return;
+  closeVisionModal();
+  $("#map-stage").appendChild($(".map-panel"));
+  $("#map-pip-stage").appendChild(Vision.element());
+  Vision.setRefreshInterval(VISION_FULL_REFRESH_MS);
+  $("#map-modal").hidden = false;
+  requestAnimationFrame(() => { updateMapTarget(); Vision.resize(); });
+}
+function closeMapModal() {
+  if ($("#map-modal").hidden) return;
+  $("#map-modal").hidden = true;
+  $(".right-col").insertBefore($(".map-panel"), $(".vision-panel"));
+  $(".vision-view").insertBefore(Vision.element(), $("#vision-status"));
+  Vision.setRefreshInterval(VISION_SMALL_REFRESH_MS);
+  requestAnimationFrame(() => { updateMapTarget(); Vision.resize(); });
+}
+$("#map-expand").addEventListener("click", openMapModal);
+$("#map-modal-close").addEventListener("click", closeMapModal);
+$("#map-modal").addEventListener("click", (event) => {
+  if (event.target.id === "map-modal") closeMapModal();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeMapModal();
 });
 
 $("#vision-range").addEventListener("change", (e) => {
