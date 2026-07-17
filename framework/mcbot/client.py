@@ -196,6 +196,9 @@ class Client:
         self._world_packet_queue: queue.Queue = queue.Queue()
         self._world_worker: threading.Thread | None = None
         self._world_stop = threading.Event()
+        self._world_generation = 0
+        self._dimension_types: list[dict | None] = []
+        self.dimension = None
         # Optional ResourcePack (see resourcepack.py) used by render_map() /
         # save_map() / start_live_map() when no per-call one is given.
         self.resource_pack = None
@@ -530,6 +533,10 @@ class Client:
         elif name == "select_known_packs":
             # claim no packs so the server streams full registry data
             self.send("select_known_packs", {"packs": []})
+        elif name == "registry_data":
+            params = self._decode(name, raw)
+            if params.get("id", "").removeprefix("minecraft:") == "dimension_type":
+                self._dimension_types = [entry.get("value") for entry in params["entries"]]
         elif name == "finish_configuration":
             self.send("finish_configuration", {})
             self._set_state("play")
@@ -618,15 +625,17 @@ class Client:
                 target=self._world_packet_loop, daemon=True,
                 name=f"world-{self.username}")
             self._world_worker.start()
-        self._world_packet_queue.put((name, raw))
+        self._world_packet_queue.put((self._world_generation, name, raw))
 
     def _world_packet_loop(self):
         while not self._world_stop.is_set():
             try:
-                name, raw = self._world_packet_queue.get(timeout=0.2)
+                generation, name, raw = self._world_packet_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             try:
+                if generation != self._world_generation:
+                    continue
                 # Chunk decoding is CPU-heavy pure Python and therefore still
                 # contends for the GIL even on this worker thread. Let the
                 # socket pump drain protocol traffic first so keepalives never
@@ -634,6 +643,8 @@ class Client:
                 while (not self._world_stop.is_set()
                        and self.conn.has_pending_data()):
                     _time.sleep(0.005)
+                if generation != self._world_generation:
+                    continue
                 params = self._decode(name, raw)
                 if params is None:
                     continue
@@ -1072,14 +1083,17 @@ class Client:
         """Fold a decoded player-related packet into tracked player state.
         Emits a 'player_state' event when anything changed."""
         if name == "login":
+            self._apply_dimension(params)
             self.entity_id = params.get("entityId", self.entity_id)
             self.effects.clear()  # fresh world; old effects no longer apply
             self.gamemode = self._extract_gamemode(params) or self.gamemode
         elif name == "respawn":
+            self._apply_dimension(params)
             self.effects.clear()
             gm = self._extract_gamemode(params)
             if gm is not None:
                 self.gamemode = gm
+
         elif name == "update_health":
             self.health = params.get("health")
             self.food = params.get("food")
@@ -1107,6 +1121,29 @@ class Client:
             if params.get("entityId") == self.entity_id:
                 self.effects.pop(params.get("effectId"), None)
         self.emit("player_state", self.player_state())
+
+    def _apply_dimension(self, params):
+        """Select the server-provided vertical range before decoding chunks."""
+        if self.world is None:
+            return
+        world_state = params.get("worldState") or {}
+        dimension = world_state.get("dimension", params.get("dimension"))
+        metadata = None
+        if isinstance(dimension, int) and 0 <= dimension < len(self._dimension_types):
+            metadata = self._dimension_types[dimension]
+        elif isinstance(dimension, dict):
+            metadata = dimension
+        min_y = metadata.get("min_y") if isinstance(metadata, dict) else None
+        if not isinstance(min_y, int):
+            min_y = self.world.min_y
+        self.dimension = {
+            "id": dimension,
+            "name": world_state.get("name", params.get("worldName")),
+            "min_y": min_y,
+            "height": metadata.get("height") if isinstance(metadata, dict) else None,
+        }
+        self._world_generation += 1
+        self.world.reset_dimension(min_y)
 
     def _extract_gamemode(self, params):
         """Gamemode from a login/respawn packet, whichever shape the version

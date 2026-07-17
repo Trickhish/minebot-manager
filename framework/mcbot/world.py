@@ -54,6 +54,14 @@ class World:
             self.chunk_revisions.pop(coord, None)
             self.dirty_chunks.add(coord)
 
+    def reset_dimension(self, min_y: int) -> None:
+        """Discard old-dimension chunks and apply its vertical coordinate base."""
+        with self.lock:
+            self.min_y = min_y
+            self.chunks.clear()
+            self.chunk_revisions.clear()
+            self.dirty_chunks.clear()
+
     # -- indexing --------------------------------------------------------
     def _locate(self, x: int, y: int, z: int):
         """(sections, section_index, local_index) for a block, or None."""
