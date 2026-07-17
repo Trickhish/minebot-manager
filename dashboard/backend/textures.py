@@ -27,8 +27,8 @@ from mcbot.png import decode_png, encode_png
 TILE = 16
 
 # Atlas on-disk format tag; bump to invalidate cached atlas.png/atlas_meta.json
-# when the pixel format changes (e.g. RGB -> RGBA cutout).
-_ATLAS_FORMAT = "rgba1"
+# when the pixel format or contents change.
+_ATLAS_FORMAT = "rgba2-items"
 
 # "Shape" blocks share their material's texture (a slab/stairs/fence of oak
 # uses oak_planks, a cobblestone_wall uses cobblestone, ...). Strip one of these
@@ -95,6 +95,7 @@ class TextureAtlas:
         self.png_path = os.path.join(cache_dir, "atlas.png")
         self._meta_path = os.path.join(cache_dir, "atlas_meta.json")
         self.stem_to_tile: dict[str, int] = {}
+        self.item_to_tile: dict[str, int] = {}
         self._face_tiles_cache: dict[str, tuple[int, int, int]] = {}
         self.cols = self.rows = 0
         self._atlas_rgba = None
@@ -109,6 +110,7 @@ class TextureAtlas:
             meta = json.load(open(self._meta_path, encoding="utf-8"))
             if meta.get("format") == _ATLAS_FORMAT:
                 self.stem_to_tile = meta["stems"]
+                self.item_to_tile = meta.get("items", {})
                 self.cols, self.rows = meta["cols"], meta["rows"]
                 return
         self._build()
@@ -118,8 +120,15 @@ class TextureAtlas:
 
         stems = sorted(s for s, arc in self.index.items()
                        if "/textures/block/" in arc)
-        cols = int(math.ceil(math.sqrt(len(stems)))) or 1
-        atlas_rows = int(math.ceil(len(stems) / cols))
+        item_index = {}
+        for arc in self.pack._all_names():
+            if not arc.lower().endswith(".png") or "/textures/item/" not in arc:
+                continue
+            item_index.setdefault(os.path.splitext(os.path.basename(arc))[0], arc)
+        item_stems = sorted(item_index)
+        tile_count = len(stems) + len(item_stems)
+        cols = int(math.ceil(math.sqrt(tile_count))) or 1
+        atlas_rows = int(math.ceil(tile_count / cols))
         atlas = np.zeros((atlas_rows * TILE, cols * TILE, 4), np.uint8)
 
         tile = 0
@@ -137,11 +146,21 @@ class TextureAtlas:
             self.stem_to_tile[stem] = tile
             tile += 1
 
+        for stem in item_stems:
+            frame = self._decode_arc(item_index[stem], np)
+            if frame is None:
+                continue
+            r, c = tile // cols, tile % cols
+            atlas[r * TILE:(r + 1) * TILE, c * TILE:(c + 1) * TILE] = frame
+            self.item_to_tile[stem] = tile
+            tile += 1
+
         self.cols, self.rows = cols, atlas_rows
         with open(self.png_path, "wb") as fh:
             fh.write(encode_png(atlas))
         with open(self._meta_path, "w", encoding="utf-8") as fh:
-            json.dump({"stems": self.stem_to_tile, "cols": cols,
+            json.dump({"stems": self.stem_to_tile, "items": self.item_to_tile,
+                       "cols": cols,
                        "rows": atlas_rows, "format": _ATLAS_FORMAT}, fh)
 
     def _decode_tile(self, stem: str, np):
@@ -149,9 +168,12 @@ class TextureAtlas:
         Alpha is preserved so the WebGL shader can cut out transparent pixels
         (torches, rails, plants); fully opaque textures get alpha 255."""
         try:
-            w, h, bpp, px = decode_png(self.pack._read(self.index[stem]))
+            return self._decode_arc(self.index[stem], np)
         except Exception:  # noqa: BLE001 - skip anything that won't decode
             return None
+
+    def _decode_arc(self, arc: str, np):
+        w, h, bpp, px = decode_png(self.pack._read(arc))
         if w < TILE or h < TILE:
             return None
         img = np.frombuffer(px, np.uint8).reshape(h, w, bpp)[:TILE, :TILE]

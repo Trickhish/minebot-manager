@@ -655,6 +655,12 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 }
 .inv-cell.held { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .inv-cell .icon { font-size: 13px; line-height: 1; }
+.inv-cell .icon.texture {
+  width: 22px;
+  height: 22px;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
 .inv-cell .count {
   position: absolute; right: 1px; bottom: 0;
   font-size: 10px; font-weight: 700; color: #fff;

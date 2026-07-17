@@ -334,7 +334,8 @@ async def atlas_meta():
     if atlas is None:
         return {"has_textures": False}
     return {"has_textures": True, "tile": TILE, "cols": atlas.cols,
-            "rows": atlas.rows, "stems": atlas.stem_to_tile}
+            "rows": atlas.rows, "stems": atlas.stem_to_tile,
+            "items": atlas.item_to_tile}
 
 
 @app.get("/api/textures/atlas.png")

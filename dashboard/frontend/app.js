@@ -569,6 +569,23 @@ function fmtDuration(ticks) {
 }
 
 // -- inventory --------------------------------------------------------------
+const itemAtlas = { loaded: false, cols: 0, rows: 0, tile: 16, blocks: {}, items: {} };
+
+function loadItemAtlas() {
+  fetch("api/textures/atlas.json?v=20260717-inventory-icons").then(r => r.json()).then(meta => {
+    if (!meta.has_textures || !meta.cols || !meta.rows) return;
+    itemAtlas.loaded = true;
+    itemAtlas.cols = meta.cols;
+    itemAtlas.rows = meta.rows;
+    itemAtlas.tile = meta.tile || 16;
+    itemAtlas.blocks = meta.stems || {};
+    itemAtlas.items = meta.items || {};
+    renderInventory(state.inventory);
+  }).catch(() => {});
+}
+
+loadItemAtlas();
+
 function renderInventory(inv) {
   state.inventory = inv || null;
   renderInventoryGrid($("#inv-grid"), inv);
@@ -621,14 +638,28 @@ function cell(item, index, heldIndex) {
     c.classList.add("filled");
     const name = (item.name || "item").replace(/^minecraft:/, "");
     c.title = `${name} ×${item.count}`;
-    c.append(el("span", "icon", abbrev(name)));
+    c.append(itemIcon(name));
     if (item.count > 1) c.append(el("span", "count", item.count));
   }
   return c;
 }
 
+function itemIcon(name) {
+  const tile = itemAtlas.items[name] ?? itemAtlas.blocks[name]
+    ?? itemAtlas.blocks[`${name}_top`]
+    ?? itemAtlas.blocks[`${name}_side`]
+    ?? itemAtlas.blocks[`${name}_front`];
+  if (!itemAtlas.loaded || !Number.isInteger(tile)) return el("span", "icon", abbrev(name));
+  const icon = el("span", "icon texture");
+  const size = 22;
+  icon.style.backgroundImage = 'url("api/textures/atlas.png?v=20260717-inventory-icons")';
+  icon.style.backgroundSize = `${itemAtlas.cols * size}px ${itemAtlas.rows * size}px`;
+  icon.style.backgroundPosition = `-${(tile % itemAtlas.cols) * size}px -${Math.floor(tile / itemAtlas.cols) * size}px`;
+  return icon;
+}
+
 function abbrev(name) {
-  // No textures available; show a short readable token per item.
+  // Resource packs do not always provide a matching item sprite.
   const parts = name.split("_");
   if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   return name.slice(0, 2).toUpperCase();
