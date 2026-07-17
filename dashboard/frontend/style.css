@@ -500,6 +500,17 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 .control-menu-panel button { width: 100%; min-height: 38px; }
 .control-menu-primary { background: #367a4a; border-color: #4c9a62; color: #fff; }
 .control-menu-primary:hover { background: #408b56; }
+.control-menu-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0;
+  background: #29313b;
+  border-color: #46515e;
+  color: #e7ebef;
+}
+.control-menu-navigation:hover { background: #343e49; }
+.control-menu-navigation span { font-size: 20px; line-height: 1; }
 .control-menu-section {
   margin: 12px 0;
   border-top: 1px solid #303945;

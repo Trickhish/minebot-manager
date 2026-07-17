@@ -528,6 +528,7 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
     controls = {
         "active": False, "forward": 0.0, "strafe": 0.0,
         "jump": False, "sneak": False,
+        "double_jump": False, "super_speed": False,
         "yaw": 0.0, "pitch": 0.0, "updated": 0.0,
     }
 
@@ -560,6 +561,8 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
                 strafe=_control_number(data.get("strafe"), -1.0, 1.0),
                 jump=bool(data.get("jump")),
                 sneak=bool(data.get("sneak")),
+                double_jump=bool(data.get("double_jump")),
+                super_speed=bool(data.get("super_speed")),
                 yaw=_control_number(data.get("yaw"), -360000.0, 360000.0),
                 pitch=_control_number(data.get("pitch"), -90.0, 90.0),
                 updated=asyncio.get_running_loop().time(),
@@ -589,6 +592,7 @@ async def bot_ws(websocket: WebSocket, bot_id: str):
                 bot.client.control_step,
                 controls["forward"], controls["strafe"], controls["jump"],
                 controls["sneak"], controls["yaw"], controls["pitch"], dt,
+                controls["double_jump"], controls["super_speed"],
             )
 
     tasks = [asyncio.create_task(fn()) for fn in

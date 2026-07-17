@@ -1146,6 +1146,7 @@ const visionControl = {
   active: false, paused: false, keys: new Set(), timer: null,
   lockPending: false, lockPendingTimer: null,
 };
+const controlMods = { doubleJump: false, superSpeed: false };
 const visionChat = {
   open: false, resumeMode: null, returnMenu: false, history: [],
   ignoreUnlock: false, ignoreUnlockTimer: null,
@@ -1205,6 +1206,8 @@ function sendVisionControl(active = visionControl.active) {
       strafe: moving ? controlAxis("KeyD", "KeyA") : 0,
       jump: moving && visionControl.keys.has("Space"),
       sneak: moving && (visionControl.keys.has("ShiftLeft") || visionControl.keys.has("ShiftRight")),
+      double_jump: controlMods.doubleJump,
+      super_speed: controlMods.superSpeed,
       yaw: look?.yaw ?? 0,
       pitch: look?.pitch ?? 0,
     },
@@ -1269,11 +1272,19 @@ function showVisionMenu(mode) {
   $("#tool-xray").checked = tools.xray;
   $("#tool-chests").checked = tools.chests;
   $("#tool-freecam").checked = mode === "freecam";
+  $("#tool-double-jump").checked = controlMods.doubleJump;
+  $("#tool-super-speed").checked = controlMods.superSpeed;
   $("#control-render-distance").value = $("#vision-range").value;
   $("#control-exit").textContent = mode === "freecam"
     ? (freecam.returnToControl ? "Return to bot control" : "Exit freecam")
     : "Exit control mode";
+  showControlMenuPanel("main");
   $("#control-menu").hidden = false;
+}
+
+function showControlMenuPanel(panel) {
+  $("#control-menu-main").hidden = panel !== "main";
+  $("#control-mods-menu").hidden = panel !== "mods";
 }
 
 function keepVisionControlPaused() {
@@ -1505,10 +1516,25 @@ $("#control-resume").addEventListener("click", () => {
   if (visionControl.active) resumeVisionControl();
   else if (freecam.active) resumeFreecam();
 });
+$("#control-mods-open").addEventListener("click", () => showControlMenuPanel("mods"));
+$("#control-mods-back").addEventListener("click", () => showControlMenuPanel("main"));
 $("#control-exit").addEventListener("click", () => {
   if (visionControl.active) stopVisionControl();
   else if (freecam.active) stopFreecam(true);
 });
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || $("#control-menu").hidden) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (!$("#control-mods-menu").hidden) {
+    showControlMenuPanel("main");
+  } else if (visionControl.active) {
+    resumeVisionControl();
+  } else if (freecam.active) {
+    resumeFreecam();
+  }
+}, true);
 
 // -- vision tools (freecam / xray / chest highlight) ------------------------
 // Freecam is a browser-only fly camera (never drives the bot).
@@ -1580,13 +1606,25 @@ function resumeFreecam(showMenuOnFailure = true) {
 function resetVisionTools() {
   stopFreecam();
   $("#control-menu").hidden = true;
-  for (const id of ["tool-xray", "tool-chests"]) $("#" + id).checked = false;
+  for (const id of ["tool-xray", "tool-chests", "tool-double-jump", "tool-super-speed"]) {
+    $("#" + id).checked = false;
+  }
+  controlMods.doubleJump = false;
+  controlMods.superSpeed = false;
   Vision.setTool("xray", false);
   Vision.setTool("chests", false);
 }
 
 $("#tool-xray").addEventListener("change", (e) => Vision.setTool("xray", e.target.checked));
 $("#tool-chests").addEventListener("change", (e) => Vision.setTool("chests", e.target.checked));
+$("#tool-double-jump").addEventListener("change", (e) => {
+  controlMods.doubleJump = e.target.checked;
+  sendVisionControl();
+});
+$("#tool-super-speed").addEventListener("change", (e) => {
+  controlMods.superSpeed = e.target.checked;
+  sendVisionControl();
+});
 $("#tool-freecam").addEventListener("change", (e) => {
   if (e.target.checked) startFreecam(); else stopFreecam(true);
   // Drop focus after requesting pointer lock so the click's user activation is

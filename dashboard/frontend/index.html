@@ -221,22 +221,33 @@
         </div>
         <div class="control-menu" id="control-menu" hidden>
           <div class="control-menu-panel" role="dialog" aria-modal="true" aria-labelledby="control-menu-title">
-            <h3 id="control-menu-title">Game menu</h3>
-            <button id="control-resume" class="control-menu-primary">Resume</button>
-            <div class="control-menu-section">
-              <div class="control-menu-section-title">Vision</div>
-              <label class="control-option"><span>X-ray</span><input type="checkbox" id="tool-xray"></label>
-              <label class="control-option"><span>Highlight containers</span><input type="checkbox" id="tool-chests"></label>
-              <label class="control-option"><span>Render distance</span>
-                <select id="control-render-distance">
-                  <option value="24">24 blocks</option>
-                  <option value="40" selected>40 blocks</option>
-                  <option value="56">56 blocks</option>
-                </select>
-              </label>
-              <label class="control-option"><span>Freecam</span><input type="checkbox" id="tool-freecam"></label>
+            <div id="control-menu-main">
+              <h3 id="control-menu-title">Game menu</h3>
+              <button id="control-resume" class="control-menu-primary">Resume</button>
+              <div class="control-menu-section">
+                <div class="control-menu-section-title">Options</div>
+                <label class="control-option"><span>Render distance</span>
+                  <select id="control-render-distance">
+                    <option value="24">24 blocks</option>
+                    <option value="40" selected>40 blocks</option>
+                    <option value="56">56 blocks</option>
+                  </select>
+                </label>
+              </div>
+              <button id="control-mods-open" class="control-menu-navigation">Mods <span aria-hidden="true">›</span></button>
+              <button id="control-exit" class="control-menu-exit">Exit control mode</button>
             </div>
-            <button id="control-exit" class="control-menu-exit">Exit control mode</button>
+            <div id="control-mods-menu" hidden>
+              <h3>Mods</h3>
+              <div class="control-menu-section">
+                <label class="control-option"><span>X-ray</span><input type="checkbox" id="tool-xray"></label>
+                <label class="control-option"><span>Highlight containers</span><input type="checkbox" id="tool-chests"></label>
+                <label class="control-option"><span>Freecam</span><input type="checkbox" id="tool-freecam"></label>
+                <label class="control-option"><span>Double jump</span><input type="checkbox" id="tool-double-jump"></label>
+                <label class="control-option"><span>Super speed</span><input type="checkbox" id="tool-super-speed"></label>
+              </div>
+              <button id="control-mods-back" class="control-menu-navigation"><span aria-hidden="true">‹</span> Back</button>
+            </div>
           </div>
         </div>
       </div>
@@ -293,6 +304,6 @@
   </div>
 
   <script src="vision.js?v=20260716-control-menu"></script>
-  <script src="app.js?v=20260717-pointer-lock-race"></script>
+  <script src="app.js?v=20260717-control-mods"></script>
 </body>
 </html>

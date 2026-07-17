@@ -181,6 +181,7 @@ class Client:
         self._control_until = 0.0
         self._control_velocity_y = 0.0
         self._control_jump_held = False
+        self._control_air_jumps = 0
         self._navigation_lock = threading.Lock()
         self._navigation_generation = 0
         self._navigation_active = None
@@ -837,7 +838,7 @@ class Client:
         self.emit("move", self.get_position())
 
     def control_step(self, forward, strafe, jump, sneak, yaw, pitch,
-                     seconds=0.05):
+                     seconds=0.05, double_jump=False, super_speed=False):
         """Apply one first-person control tick and report it to the server.
 
         This intentionally follows the same simple dead-reckoning model as
@@ -854,7 +855,9 @@ class Client:
         yaw = float(yaw) % 360.0
         pitch = max(-90.0, min(90.0, float(pitch)))
         radians = math.radians(yaw)
-        distance = self.walk_speed * (0.3 if sneak else 1.0) * seconds
+        speed_multiplier = 2.0 if super_speed else 1.0
+        distance = (self.walk_speed * speed_multiplier
+                    * (0.3 if sneak else 1.0) * seconds)
         self._control_until = _time.monotonic() + 0.2
 
         dx = (-math.sin(radians) * forward
@@ -869,10 +872,16 @@ class Client:
             self.position["yaw"] = yaw
             self.position["pitch"] = pitch
 
-            jump_started = (jump and not self._control_jump_held and on_ground)
+            jump_pressed = jump and not self._control_jump_held
             self._control_jump_held = jump
-            if jump_started:
+            if on_ground:
+                self._control_air_jumps = 0
+            air_jump = (jump_pressed and not on_ground and double_jump
+                        and self._control_air_jumps < 1)
+            if jump_pressed and (on_ground or air_jump):
                 self._control_velocity_y = _JUMP_VELOCITY
+                if air_jump:
+                    self._control_air_jumps += 1
                 on_ground = False
 
             # Horizontal move, resolved one axis at a time so the box slides
@@ -905,6 +914,7 @@ class Client:
                 if vy <= 0 and ground is not None and y <= ground:
                     y = ground  # landed
                     on_ground = True
+                    self._control_air_jumps = 0
                     vy = 0.0
                 self._control_velocity_y = vy
 
