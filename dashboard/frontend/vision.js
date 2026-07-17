@@ -224,7 +224,7 @@ const Vision = (() => {
     const done = (s) => { atlasState = s; atlasWaiters.forEach(f => f()); atlasWaiters = []; };
     // Version tag busts any stale browser cache of the atlas when the tiles
     // change (e.g. new tints). Bump alongside the vision.js cache-buster.
-    const av = "?v=20260716-liquid-textures";
+    const av = "?v=20260717-inventory-items";
     fetch("api/textures/atlas.json" + av).then(r => r.json()).then(meta => {
       if (!meta.has_textures) return done("none");
       atlasCols = meta.cols; atlasRows = meta.rows; atlasTile = meta.tile;

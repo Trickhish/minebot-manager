@@ -22,7 +22,7 @@ import json
 import os
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from macros import MacroEngine, MacroError
 from manager import BotManager
@@ -332,10 +332,12 @@ def _render_textured_tile(bot, chunk_x: int, chunk_z: int):
 async def atlas_meta():
     """Atlas grid geometry for the client's UV math, or has_textures=false."""
     if atlas is None:
-        return {"has_textures": False}
-    return {"has_textures": True, "tile": TILE, "cols": atlas.cols,
-            "rows": atlas.rows, "stems": atlas.stem_to_tile,
-            "items": atlas.item_to_tile}
+        payload = {"has_textures": False}
+    else:
+        payload = {"has_textures": True, "tile": TILE, "cols": atlas.cols,
+                   "rows": atlas.rows, "stems": atlas.stem_to_tile,
+                   "items": atlas.item_to_tile}
+    return JSONResponse(payload, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/textures/atlas.png")
