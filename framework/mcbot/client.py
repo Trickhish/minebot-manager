@@ -1425,7 +1425,10 @@ class Client:
     def _default_settings(self):
         fields = self._packet_fields("configuration", "toServer", "settings")
         base = {
-            "locale": "en_US", "viewDistance": 8, "chatFlags": 0,
+            # A full 8-chunk radius is hundreds of Python-decoded chunk
+            # columns per bot. Keep the server stream small enough that
+            # concurrent bots can answer keepalives reliably.
+            "locale": "en_US", "viewDistance": 4, "chatFlags": 0,
             "chatColors": True, "skinParts": 0x7F, "mainHand": 1,
             "enableTextFiltering": False, "enableServerListing": True,
             "particleStatus": "all",
