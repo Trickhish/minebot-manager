@@ -1142,7 +1142,10 @@ document.addEventListener("keydown", (e) => {
 
 // Pointer-lock first-person controls. The socket carries state snapshots at
 // Minecraft's 20 Hz tick rate; the host times out stale input independently.
-const visionControl = { active: false, paused: false, keys: new Set(), timer: null };
+const visionControl = {
+  active: false, paused: false, keys: new Set(), timer: null,
+  lockPending: false, lockPendingTimer: null,
+};
 const visionChat = {
   open: false, resumeMode: null, returnMenu: false, history: [],
   ignoreUnlock: false, ignoreUnlockTimer: null,
@@ -1153,6 +1156,37 @@ const VISION_CHAT_MAX_HISTORY = 50;
 const CONTROL_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
 ]);
+
+function clearPendingPointerLock(mode) {
+  mode.lockPending = false;
+  clearTimeout(mode.lockPendingTimer);
+  mode.lockPendingTimer = null;
+}
+
+function requestVisionPointerLock(mode, onFailure) {
+  const target = Vision.element();
+  if (!target.requestPointerLock) {
+    onFailure();
+    return;
+  }
+  clearPendingPointerLock(mode);
+  mode.lockPending = true;
+  const fail = () => {
+    if (!mode.lockPending) return;
+    clearPendingPointerLock(mode);
+    onFailure();
+  };
+  mode.lockPendingTimer = setTimeout(() => {
+    if (document.pointerLockElement === target) clearPendingPointerLock(mode);
+    else fail();
+  }, 1500);
+  try {
+    const lock = target.requestPointerLock();
+    if (lock && typeof lock.catch === "function") lock.catch(fail);
+  } catch {
+    fail();
+  }
+}
 
 function controlAxis(positive, negative) {
   return (visionControl.keys.has(positive) ? 1 : 0)
@@ -1192,7 +1226,6 @@ function startVisionControl() {
     $("#vision-renderer").value = "custom";
   }
   openVisionModal();
-  const target = Vision.element();
   visionControl.active = true;
   visionControl.paused = false;
   Vision.setControlActive(true);
@@ -1201,20 +1234,12 @@ function startVisionControl() {
   setControlUi(true);
   sendVisionControl();
   visionControl.timer = setInterval(sendVisionControl, 50);
-  if (!target.requestPointerLock) {
-    pauseVisionControl();
-    return;
-  }
-  try {
-    const lock = target.requestPointerLock();
-    if (lock && typeof lock.catch === "function") lock.catch(pauseVisionControl);
-  } catch {
-    pauseVisionControl();
-  }
+  requestVisionPointerLock(visionControl, pauseVisionControl);
 }
 
 function stopVisionControl() {
   if (!visionControl.active) return;
+  clearPendingPointerLock(visionControl);
   sendVisionControl(false);
   visionControl.active = false;
   visionControl.paused = false;
@@ -1229,6 +1254,7 @@ function stopVisionControl() {
 
 function pauseVisionControl() {
   if (!visionControl.active || visionControl.paused) return;
+  clearPendingPointerLock(visionControl);
   visionControl.paused = true;
   visionControl.keys.clear();
   sendVisionControl();
@@ -1261,17 +1287,11 @@ function keepVisionControlPaused() {
 
 function resumeVisionControl(showMenuOnFailure = true) {
   if (!visionControl.active || !visionControl.paused) return;
-  const target = Vision.element();
   const onFailure = showMenuOnFailure ? pauseVisionControl : keepVisionControlPaused;
   visionControl.paused = false;
   $("#control-menu").hidden = true;
   setControlUi(true);
-  try {
-    const lock = target.requestPointerLock();
-    if (lock && typeof lock.catch === "function") lock.catch(onFailure);
-  } catch {
-    onFailure();
-  }
+  requestVisionPointerLock(visionControl, onFailure);
 }
 
 $("#vision-control").addEventListener("click", () => {
@@ -1280,6 +1300,10 @@ $("#vision-control").addEventListener("click", () => {
 });
 document.addEventListener("pointerlockchange", () => {
   const locked = document.pointerLockElement === Vision.element();
+  if (locked) {
+    clearPendingPointerLock(visionControl);
+    clearPendingPointerLock(freecam);
+  }
   if (!locked && visionChat.ignoreUnlock) {
     visionChat.ignoreUnlock = false;
     clearTimeout(visionChat.ignoreUnlockTimer);
@@ -1287,6 +1311,7 @@ document.addEventListener("pointerlockchange", () => {
     return;
   }
   if (visionChat.open && !locked) return;
+  if (!locked && (visionControl.lockPending || freecam.lockPending)) return;
   if (visionControl.active) {
     if (locked) {
       visionControl.paused = false;
@@ -1487,7 +1512,10 @@ $("#control-exit").addEventListener("click", () => {
 
 // -- vision tools (freecam / xray / chest highlight) ------------------------
 // Freecam is a browser-only fly camera (never drives the bot).
-const freecam = { active: false, paused: false, returnToControl: false };
+const freecam = {
+  active: false, paused: false, returnToControl: false,
+  lockPending: false, lockPendingTimer: null,
+};
 const FREECAM_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
 ]);
@@ -1503,21 +1531,12 @@ function startFreecam() {
   $("#tool-freecam").checked = true;
   $("#control-menu").hidden = true;
   $("#vision-crosshair").hidden = false;
-  const target = Vision.element();
-  if (!target.requestPointerLock) {
-    pauseFreecam();
-    return;
-  }
-  try {
-    const lock = target.requestPointerLock();
-    if (lock && typeof lock.catch === "function") lock.catch(pauseFreecam);
-  } catch {
-    pauseFreecam();
-  }
+  requestVisionPointerLock(freecam, pauseFreecam);
 }
 
 function stopFreecam(resumeControl = false) {
   if (!freecam.active) return;
+  clearPendingPointerLock(freecam);
   const shouldResumeControl = resumeControl && freecam.returnToControl;
   freecam.active = false;
   freecam.paused = false;
@@ -1533,6 +1552,7 @@ function stopFreecam(resumeControl = false) {
 
 function pauseFreecam() {
   if (!freecam.active || freecam.paused) return;
+  clearPendingPointerLock(freecam);
   freecam.paused = true;
   FREECAM_KEYS.forEach(k => Vision.setFreecamKey(k, false));
   $("#vision-crosshair").hidden = true;
@@ -1550,17 +1570,11 @@ function keepFreecamPaused() {
 
 function resumeFreecam(showMenuOnFailure = true) {
   if (!freecam.active || !freecam.paused) return;
-  const target = Vision.element();
   const onFailure = showMenuOnFailure ? pauseFreecam : keepFreecamPaused;
   freecam.paused = false;
   $("#control-menu").hidden = true;
   $("#vision-crosshair").hidden = false;
-  try {
-    const lock = target.requestPointerLock?.();
-    if (lock && typeof lock.catch === "function") lock.catch(onFailure);
-  } catch {
-    onFailure();
-  }
+  requestVisionPointerLock(freecam, onFailure);
 }
 
 function resetVisionTools() {
