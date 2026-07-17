@@ -82,11 +82,19 @@ def _get_chunk_tiles(world, resource_pack, np):
     for coord in [c for c in tiles if c not in world.chunks]:
         del tiles[coord]  # chunk was unloaded
 
-    for coord in list(world.dirty_chunks):
+    # Claim only the entries that existed when this render began. The world
+    # worker may mark a coordinate dirty again while its tile is being built;
+    # popping first preserves that new mark for the next frame. Clearing the
+    # whole set here loses chunk loads/edits that race with rendering.
+    dirty_count = len(world.dirty_chunks)
+    for _ in range(dirty_count):
+        try:
+            coord = world.dirty_chunks.pop()
+        except KeyError:
+            break
         sections = world.chunks.get(coord)
         if sections is not None:
             tiles[coord] = _compute_chunk_tile(sections, air_ids, world, color_cache, resource_pack, np)
-    world.dirty_chunks.clear()
     return tiles
 
 
