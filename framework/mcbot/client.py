@@ -653,6 +653,10 @@ class Client:
                 if name == "map_chunk":
                     self.world.load_chunk(
                         params["x"], params["z"], params["chunkData"])
+                    # Chunk parsing is pure Python and a server can deliver a
+                    # sustained burst. Yield before picking up the next chunk
+                    # so every bot's socket pump can answer keepalives.
+                    _time.sleep(0.005)
                 elif name == "unload_chunk":
                     self.world.unload_chunk(params["chunkX"], params["chunkZ"])
                 elif name == "block_change":
