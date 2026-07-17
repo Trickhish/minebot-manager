@@ -822,7 +822,8 @@ function drawMapBot(ctx, rect) {
   if (x < -12 || y < -12 || x > rect.width + 12 || y > rect.height + 12) return;
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(-(position.yaw || 0) * Math.PI / 180);
+  // Minecraft yaw 0 faces south (+Z); this arrow's unrotated tip faces north.
+  ctx.rotate(((position.yaw || 0) + 180) * Math.PI / 180);
   ctx.beginPath();
   ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 4); ctx.lineTo(-6, 7);
   ctx.closePath();
