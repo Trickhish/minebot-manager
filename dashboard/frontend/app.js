@@ -626,6 +626,7 @@ const MAP_MAX_SCALE = 32;
 const MAP_TILE_CONCURRENCY = 4;
 const MAP_TEXTURE_SCALE = 8;
 const mapDrag = { active: false, moved: false, x: 0, y: 0, center: null };
+const mapWheelZoom = { delta: 0, x: 0, y: 0, frame: null };
 
 function startMap() {
   state.mapGeneration += 1;
@@ -923,6 +924,27 @@ function zoomMap(direction, clientX = null, clientY = null) {
   setMapScale(state.mapScale * factor, clientX, clientY);
 }
 
+function queueMapWheelZoom(event) {
+  const rect = mapView.getBoundingClientRect();
+  const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? 16
+    : (event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? rect.height : 1);
+  mapWheelZoom.delta = Math.max(
+    -240, Math.min(240, mapWheelZoom.delta + event.deltaY * unit));
+  mapWheelZoom.x = event.clientX;
+  mapWheelZoom.y = event.clientY;
+  if (mapWheelZoom.frame !== null) return;
+  mapWheelZoom.frame = requestAnimationFrame(() => {
+    mapWheelZoom.frame = null;
+    const delta = mapWheelZoom.delta;
+    mapWheelZoom.delta = 0;
+    if (!delta) return;
+    const factor = Math.exp(-delta * 0.0018);
+    setMapScale(
+      state.mapScale * factor, mapWheelZoom.x, mapWheelZoom.y);
+  });
+}
+
 function updateMapScale() {
   const value = state.mapScale >= 1
     ? `${state.mapScale.toFixed(state.mapScale < 10 ? 1 : 0)} px/block`
@@ -1035,7 +1057,7 @@ mapView.addEventListener("pointerleave", () => {
 });
 mapView.addEventListener("wheel", (event) => {
   event.preventDefault();
-  zoomMap(event.deltaY > 0 ? 1 : -1, event.clientX, event.clientY);
+  queueMapWheelZoom(event);
 }, { passive: false });
 
 $("#map-zoom-out").addEventListener("click", () => zoomMap(1));
