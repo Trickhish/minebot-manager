@@ -1146,6 +1146,7 @@ const visionControl = { active: false, paused: false, keys: new Set(), timer: nu
 const visionChat = {
   open: false, resumeMode: null, returnMenu: false, history: [],
   ignoreUnlock: false, ignoreUnlockTimer: null,
+  escapeClosing: false, escapeResumeMode: null,
 };
 const VISION_CHAT_VISIBLE_MS = 12000;
 const VISION_CHAT_MAX_HISTORY = 50;
@@ -1431,19 +1432,18 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopImmediatePropagation();
-      const resumeMode = visionControl.active
+      visionChat.escapeClosing = true;
+      visionChat.escapeResumeMode = visionControl.active
         ? "control"
         : (freecam.active ? "freecam" : null);
       closeVisionChat(false);
       $("#control-menu").hidden = true;
-      // Request lock after Escape's default handling, which otherwise releases
-      // a lock acquired synchronously from this key event.
-      setTimeout(() => {
-        if (visionChat.open || !$("#control-menu").hidden) return;
-        if (resumeMode === "control") resumeVisionControl(false);
-        else if (resumeMode === "freecam") resumeFreecam(false);
-      }, 0);
     }
+    return;
+  }
+  if (visionChat.escapeClosing && e.key === "Escape") {
+    e.preventDefault();
+    e.stopImmediatePropagation();
     return;
   }
   const target = e.target;
@@ -1452,6 +1452,18 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   e.stopImmediatePropagation();
   openVisionChat();
+}, true);
+
+document.addEventListener("keyup", (e) => {
+  if (!visionChat.escapeClosing || e.key !== "Escape") return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const resumeMode = visionChat.escapeResumeMode;
+  visionChat.escapeClosing = false;
+  visionChat.escapeResumeMode = null;
+  if (visionChat.open || !$("#control-menu").hidden) return;
+  if (resumeMode === "control") resumeVisionControl(false);
+  else if (resumeMode === "freecam") resumeFreecam(false);
 }, true);
 
 Vision.element().addEventListener("click", () => {
