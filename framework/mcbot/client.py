@@ -129,7 +129,10 @@ def offline_uuid(username: str) -> str:
 
 _CHAT_PACKETS = ("chat", "system_chat", "player_chat", "profileless_chat")
 _WORLD_PACKETS = ("map_chunk", "unload_chunk", "block_change", "multi_block_change")
-_MAX_PENDING_WORLD_CHUNKS = 48
+# A 4-chunk view radius contains 81 columns. Keep enough of the current
+# server batch to avoid permanent holes: servers do not retransmit a chunk
+# that the client discarded while overloaded.
+_MAX_PENDING_WORLD_CHUNKS = 128
 
 
 class OnlineModeRequired(Exception):
@@ -576,7 +579,9 @@ class Client:
             # processing rate. Keep this on the socket thread: it is tiny and
             # unblocks the next batch while chunk decoding continues off-thread.
             self._decode(name, raw)
-            self.send("chunk_batch_received", {"chunksPerTick": 8.0})
+            # Keep incoming batches within what the Python chunk decoder can
+            # finish without creating a queue large enough to lose terrain.
+            self.send("chunk_batch_received", {"chunksPerTick": 2.0})
         elif name == "position":
             # Server-authoritative position sync (spawn + teleports). Always
             # decoded and confirmed -- this is how we know where we are.
@@ -630,9 +635,8 @@ class Client:
 
     def _queue_world_packet(self, name, raw):
         # Servers may send hundreds of chunks even when they ignore the
-        # requested view distance. Keep a nearby initial window, but drop the
-        # excess before it can monopolize CPU and delay other bots' keepalive
-        # responses. Later chunks are accepted as the worker drains the queue.
+        # requested view distance. Keep a full current view window, but bound
+        # excess packets before they can monopolize CPU and delay keepalives.
         if (name == "map_chunk"
                 and self._world_packet_queue.qsize() >= _MAX_PENDING_WORLD_CHUNKS):
             return
