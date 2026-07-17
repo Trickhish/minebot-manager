@@ -111,6 +111,7 @@ function selectBot(id) {
   stopMap();
   Vision.detach();
   state.selected = id;
+  resetVisionChat();
   renderBotList();
   $("#detail-empty").hidden = !!id;
   $("#detail-body").hidden = !id;
@@ -229,6 +230,7 @@ function logEvent(ev) {
       return;
     }
     text = describeChat(ev.data);
+    appendVisionChat(text, ev.ts);
   }
   else if (type === "state") {
     text = `→ ${ev.data.state}`;
@@ -466,13 +468,18 @@ $("#new-bot").addEventListener("submit", async (e) => {
   }
 });
 
+async function sendChat(message) {
+  if (!message || !state.selected) return;
+  await api.chat(state.selected, message);
+}
+
 $("#chat-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const input = $("#chat-input");
   const message = input.value.trim();
   if (!message || !state.selected) return;
   try {
-    await api.chat(state.selected, message);
+    await sendChat(message);
     input.value = "";
   } catch (err) { $("#detail-error").textContent = err.message; }
 });
@@ -1082,6 +1089,7 @@ function openVisionModal() {
 }
 function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
+  closeVisionChat(false);
   stopVisionControl();
   stopFreecam();
   $("#control-menu").hidden = true;
@@ -1102,6 +1110,12 @@ document.addEventListener("keydown", (e) => {
 // Pointer-lock first-person controls. The socket carries state snapshots at
 // Minecraft's 20 Hz tick rate; the host times out stale input independently.
 const visionControl = { active: false, paused: false, keys: new Set(), timer: null };
+const visionChat = {
+  open: false, resumeMode: null, returnMenu: false, history: [],
+  ignoreUnlock: false, ignoreUnlockTimer: null,
+};
+const VISION_CHAT_VISIBLE_MS = 12000;
+const VISION_CHAT_MAX_HISTORY = 50;
 const CONTROL_KEYS = new Set([
   "KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight",
 ]);
@@ -1190,6 +1204,7 @@ function pauseVisionControl() {
 }
 
 function showVisionMenu(mode) {
+  closeVisionChat(false);
   const tools = Vision.getTools();
   $("#tool-xray").checked = tools.xray;
   $("#tool-chests").checked = tools.chests;
@@ -1221,6 +1236,13 @@ $("#vision-control").addEventListener("click", () => {
 });
 document.addEventListener("pointerlockchange", () => {
   const locked = document.pointerLockElement === Vision.element();
+  if (!locked && visionChat.ignoreUnlock) {
+    visionChat.ignoreUnlock = false;
+    clearTimeout(visionChat.ignoreUnlockTimer);
+    visionChat.ignoreUnlockTimer = null;
+    return;
+  }
+  if (visionChat.open && !locked) return;
   if (visionControl.active) {
     if (locked) {
       visionControl.paused = false;
@@ -1264,6 +1286,123 @@ document.addEventListener("keyup", (e) => {
   sendVisionControl();
 });
 window.addEventListener("blur", pauseVisionControl);
+
+function renderVisionChat() {
+  const messages = $("#vision-chat-messages");
+  if (!messages) return;
+  const now = Date.now();
+  const entries = visionChat.open
+    ? visionChat.history.slice(-14)
+    : visionChat.history.slice(-8);
+  messages.replaceChildren(...entries.map(entry => {
+    const line = el("div", "vision-chat-message", entry.text);
+    if (now - entry.receivedAt > VISION_CHAT_VISIBLE_MS) line.classList.add("stale");
+    return line;
+  }));
+  if (visionChat.open) messages.scrollTop = messages.scrollHeight;
+}
+
+function appendVisionChat(text, ts) {
+  if (!text) return;
+  visionChat.history.push({
+    text,
+    receivedAt: Number.isFinite(ts) ? ts * 1000 : Date.now(),
+  });
+  if (visionChat.history.length > VISION_CHAT_MAX_HISTORY) visionChat.history.shift();
+  renderVisionChat();
+}
+
+function resetVisionChat() {
+  visionChat.history.length = 0;
+  renderVisionChat();
+}
+
+function openVisionChat() {
+  if (visionChat.open || $("#vision-modal").hidden || !state.selected) return;
+  visionChat.open = true;
+  visionChat.resumeMode = visionControl.active && !visionControl.paused
+    ? "control"
+    : (freecam.active && !freecam.paused ? "freecam" : null);
+  visionChat.returnMenu = !$("#control-menu").hidden;
+  if (visionControl.active) {
+    visionControl.paused = true;
+    visionControl.keys.clear();
+    sendVisionControl();
+    setControlUi(true);
+  }
+  if (freecam.active) {
+    freecam.paused = true;
+    FREECAM_KEYS.forEach(key => Vision.setFreecamKey(key, false));
+    $("#vision-crosshair").hidden = true;
+  }
+  $("#control-menu").hidden = true;
+  $("#vision-chat").classList.add("open");
+  $("#vision-chat-form").hidden = false;
+  renderVisionChat();
+  if (document.pointerLockElement === Vision.element()) {
+    visionChat.ignoreUnlock = true;
+    clearTimeout(visionChat.ignoreUnlockTimer);
+    visionChat.ignoreUnlockTimer = setTimeout(() => {
+      visionChat.ignoreUnlock = false;
+      visionChat.ignoreUnlockTimer = null;
+    }, 1000);
+    document.exitPointerLock();
+  }
+  requestAnimationFrame(() => $("#vision-chat-input").focus());
+}
+
+function closeVisionChat(resume = true) {
+  if (!visionChat.open) return;
+  const resumeMode = visionChat.resumeMode;
+  const returnMenu = visionChat.returnMenu;
+  visionChat.open = false;
+  visionChat.resumeMode = null;
+  visionChat.returnMenu = false;
+  $("#vision-chat-input").value = "";
+  $("#vision-chat-form").hidden = true;
+  $("#vision-chat").classList.remove("open");
+  renderVisionChat();
+  if (!resume) return;
+  if (resumeMode === "control") resumeVisionControl();
+  else if (resumeMode === "freecam") resumeFreecam();
+  else if (returnMenu && visionControl.active) showVisionMenu("control");
+  else if (returnMenu && freecam.active) showVisionMenu("freecam");
+}
+
+$("#vision-chat-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = $("#vision-chat-input");
+  const message = input.value.trim();
+  if (!message || !state.selected) return;
+  const request = sendChat(message);
+  closeVisionChat(true);
+  try {
+    await request;
+  } catch (err) {
+    $("#detail-error").textContent = err.message;
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (visionChat.open) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeVisionChat(true);
+    }
+    return;
+  }
+  const target = e.target;
+  const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+  if (e.code !== "KeyT" || typing || $("#vision-modal").hidden) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  openVisionChat();
+}, true);
+
+setInterval(() => {
+  if (!visionChat.open && !$("#vision-modal").hidden) renderVisionChat();
+}, 1000);
 
 $("#control-resume").addEventListener("click", () => {
   if (visionControl.active) resumeVisionControl();

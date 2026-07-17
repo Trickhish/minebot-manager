@@ -421,6 +421,54 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 .vision-crosshair::after { left: 0; top: 8px; width: 18px; height: 2px; }
 #vision-control.active { background: #b23b32; border-color: #d85a50; color: #fff; }
 
+.vision-chat {
+  position: absolute;
+  z-index: 3;
+  left: 16px;
+  bottom: 16px;
+  width: min(680px, calc(100% - 32px));
+  pointer-events: none;
+  color: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  text-shadow: 1px 1px 1px #000;
+}
+.vision-chat-messages {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-bottom: 5px;
+}
+.vision-chat-message {
+  max-width: 100%;
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+  background: rgba(0, 0, 0, .58);
+}
+.vision-chat-message.stale { display: none; }
+.vision-chat.open .vision-chat-messages {
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+  pointer-events: auto;
+}
+.vision-chat.open .vision-chat-message.stale { display: block; }
+.vision-chat-form { pointer-events: auto; }
+.vision-chat-form[hidden] { display: none; }
+.vision-chat-form input {
+  width: 100%;
+  margin: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(210, 220, 230, .62);
+  border-radius: 2px;
+  background: rgba(0, 0, 0, .78);
+  color: #fff;
+  font: inherit;
+  text-shadow: none;
+  outline: none;
+}
+.vision-chat-form input:focus { border-color: #fff; }
+
 .control-menu {
   position: absolute;
   z-index: 4;
@@ -486,6 +534,10 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
   .control-menu-panel { padding: 14px 18px; }
   .control-menu-panel h3 { margin-bottom: 10px; }
   .control-option { min-height: 34px; }
+}
+
+@media (max-width: 600px) {
+  .vision-chat { left: 10px; bottom: 10px; width: calc(100% - 20px); font-size: 12px; }
 }
 
 /* -- inventory ----------------------------------------------------------- */

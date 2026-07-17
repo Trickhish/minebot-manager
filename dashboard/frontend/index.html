@@ -213,6 +213,12 @@
       </div>
       <div class="vision-stage" id="vision-stage">
         <div class="vision-crosshair" id="vision-crosshair" hidden></div>
+        <div class="vision-chat" id="vision-chat">
+          <div class="vision-chat-messages" id="vision-chat-messages" aria-live="polite"></div>
+          <form class="vision-chat-form" id="vision-chat-form" hidden>
+            <input id="vision-chat-input" name="message" placeholder="Message or /command" autocomplete="off" maxlength="256">
+          </form>
+        </div>
         <div class="control-menu" id="control-menu" hidden>
           <div class="control-menu-panel" role="dialog" aria-modal="true" aria-labelledby="control-menu-title">
             <h3 id="control-menu-title">Game menu</h3>
@@ -287,6 +293,6 @@
   </div>
 
   <script src="vision.js?v=20260716-control-menu"></script>
-  <script src="app.js?v=20260717-tiled-map"></script>
+  <script src="app.js?v=20260717-vision-chat"></script>
 </body>
 </html>
