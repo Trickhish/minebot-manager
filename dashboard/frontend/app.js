@@ -1123,6 +1123,7 @@ function openVisionModal() {
 function closeVisionModal() {
   if ($("#vision-modal").hidden) return;
   closeVisionChat(false);
+  stopVisionLookaround();
   stopVisionControl();
   stopFreecam();
   $("#control-menu").hidden = true;
@@ -1137,7 +1138,8 @@ $("#vision-modal").addEventListener("click", (e) => {
   if (e.target.id === "vision-modal") closeVisionModal();   // click backdrop
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !visionControl.active && !freecam.active) closeVisionModal();
+  if (e.key === "Escape" && !visionControl.active && !freecam.active
+      && !visionLookaround.active) closeVisionModal();
 });
 
 // Pointer-lock first-person controls. The socket carries state snapshots at
@@ -1145,6 +1147,9 @@ document.addEventListener("keydown", (e) => {
 const visionControl = {
   active: false, paused: false, keys: new Set(), timer: null,
   lockPending: false, lockPendingTimer: null,
+};
+const visionLookaround = {
+  active: false, lockPending: false, lockPendingTimer: null,
 };
 const controlMods = { doubleJump: false, superSpeed: false };
 const visionChat = {
@@ -1223,6 +1228,7 @@ function setControlUi(active) {
 
 function startVisionControl() {
   if (!state.selected || visionControl.active) return;
+  stopVisionLookaround();
   stopFreecam();
   if (Vision.renderer() !== "custom") {
     Vision.setRenderer("custom");
@@ -1314,6 +1320,7 @@ document.addEventListener("pointerlockchange", () => {
   if (locked) {
     clearPendingPointerLock(visionControl);
     clearPendingPointerLock(freecam);
+    clearPendingPointerLock(visionLookaround);
   }
   if (!locked && visionChat.ignoreUnlock) {
     visionChat.ignoreUnlock = false;
@@ -1322,7 +1329,8 @@ document.addEventListener("pointerlockchange", () => {
     return;
   }
   if (visionChat.open && !locked) return;
-  if (!locked && (visionControl.lockPending || freecam.lockPending)) return;
+  if (!locked && (visionControl.lockPending || freecam.lockPending
+      || visionLookaround.lockPending)) return;
   if (visionControl.active) {
     if (locked) {
       visionControl.paused = false;
@@ -1339,11 +1347,46 @@ document.addEventListener("pointerlockchange", () => {
     } else {
       pauseFreecam();
     }
+  } else if (visionLookaround.active && !locked) {
+    stopVisionLookaround(false);
   }
 });
 document.addEventListener("mousemove", (e) => {
-  if (!visionControl.active || document.pointerLockElement !== Vision.element()) return;
+  if ((!visionControl.active && !visionLookaround.active)
+      || document.pointerLockElement !== Vision.element()) return;
   Vision.adjustLook(e.movementX, e.movementY);
+});
+
+function startVisionLookaround() {
+  if (visionLookaround.active || $("#vision-modal").hidden) return;
+  stopVisionControl();
+  stopFreecam();
+  if (Vision.renderer() !== "custom") {
+    Vision.setRenderer("custom");
+    $("#vision-renderer").value = "custom";
+    $("#vision-stage").appendChild(Vision.element());
+    requestAnimationFrame(() => Vision.resize());
+  }
+  visionLookaround.active = true;
+  Vision.setLookaround(true);
+  $("#vision-lookaround").checked = true;
+  requestVisionPointerLock(visionLookaround, () => stopVisionLookaround(false));
+}
+
+function stopVisionLookaround(releasePointer = true) {
+  if (!visionLookaround.active && !visionLookaround.lockPending) return;
+  clearPendingPointerLock(visionLookaround);
+  visionLookaround.active = false;
+  Vision.setLookaround(false);
+  $("#vision-lookaround").checked = false;
+  if (releasePointer && document.pointerLockElement === Vision.element()) {
+    document.exitPointerLock();
+  }
+}
+
+$("#vision-lookaround").addEventListener("change", (e) => {
+  if (e.target.checked) startVisionLookaround();
+  else stopVisionLookaround();
 });
 document.addEventListener("keydown", (e) => {
   if (!visionControl.active) return;
@@ -1548,6 +1591,7 @@ const FREECAM_KEYS = new Set([
 
 function startFreecam() {
   if (freecam.active) return;
+  stopVisionLookaround();
   const returnToControl = visionControl.active;
   if (returnToControl) stopVisionControl();
   freecam.active = true;

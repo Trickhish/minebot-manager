@@ -401,6 +401,20 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 }
 .vision-modal-box { width: 96vw; height: 94vh; }
 .vision-stage { position: relative; flex: 1; min-height: 0; background: #0a0d11; display: flex; }
+.vision-modal-actions,
+.vision-lookaround-toggle {
+  display: flex;
+  align-items: center;
+}
+.vision-modal-actions { gap: 12px; }
+.vision-lookaround-toggle {
+  gap: 7px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.vision-lookaround-toggle input { width: auto; margin: 0; }
 .vision-crosshair {
   position: absolute;
   z-index: 2;

@@ -98,6 +98,7 @@ const Vision = (() => {
   // (highlight containers through walls). Rebuild the mesh when xray/chests flip.
   const tools = { freecam: false, xray: false, chests: false };
   let freecamPose = null;
+  let lookaroundPose = null;
   const freecamKeys = new Set();
   let botId = null, range = 40;
   let refreshMs = DEFAULT_GEOM_REFRESH_MS;
@@ -771,7 +772,11 @@ const Vision = (() => {
     syncSize();  // keep the drawing buffer matched to the (possibly resized) canvas
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    const cam = tools.freecam && freecamPose ? freecamPose : pose;
+    const cam = tools.freecam && freecamPose
+      ? freecamPose
+      : (lookaroundPose && pose
+        ? { eye: pose.eye, yaw: lookaroundPose.yaw, pitch: lookaroundPose.pitch }
+        : pose);
     if (!cam || vertexCount === 0) return;
 
     // Freecam can roam far from the bot, so give it a much longer far plane.
@@ -913,6 +918,7 @@ const Vision = (() => {
       botId = null; pose = null; poseTarget = null; vertexCount = 0;
       lastPayload = null; highlightCount = 0;
       tools.freecam = false; freecamPose = null; freecamKeys.clear();
+      lookaroundPose = null;
       lastFrameTime = 0;
       clearInterval(geomTimer); geomTimer = null;
       if (rafHandle) { cancelAnimationFrame(rafHandle); rafHandle = null; }
@@ -964,6 +970,12 @@ const Vision = (() => {
         freecamPose.pitch = Math.max(-90, Math.min(90, freecamPose.pitch + dy * 0.12));
         return { yaw: freecamPose.yaw, pitch: freecamPose.pitch };
       }
+      if (lookaroundPose) {
+        lookaroundPose.yaw = (lookaroundPose.yaw + dx * 0.12 + 360) % 360;
+        lookaroundPose.pitch = Math.max(
+          -90, Math.min(90, lookaroundPose.pitch + dy * 0.12));
+        return { yaw: lookaroundPose.yaw, pitch: lookaroundPose.pitch };
+      }
       const current = poseTarget || pose;
       if (!botId || !current) return null;
       const yaw = (current.yaw + dx * 0.12 + 360) % 360;
@@ -979,6 +991,17 @@ const Vision = (() => {
       const current = poseTarget || pose;
       return current ? { yaw: current.yaw, pitch: current.pitch } : null;
     },
+    setLookaround(active) {
+      if (active) {
+        const current = pose || poseTarget;
+        lookaroundPose = current
+          ? { yaw: current.yaw, pitch: current.pitch }
+          : { yaw: 0, pitch: 0 };
+      } else {
+        lookaroundPose = null;
+      }
+    },
+    isLookaround() { return lookaroundPose !== null; },
     setControlActive(active) { controlActive = !!active; },
     // Enable/disable a tool. "freecam" detaches the camera; "xray"/"chests"
     // change the mesh and need a rebuild.

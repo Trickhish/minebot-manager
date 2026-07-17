@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260717-map-navigation">
+  <link rel="stylesheet" href="style.css?v=20260717-lookaround">
 </head>
 <body>
   <header>
@@ -209,7 +209,13 @@
     <div class="modal-box vision-modal-box">
       <div class="modal-head">
         <h2>Bot vision</h2>
-        <button class="modal-close" id="vision-modal-close">✕</button>
+        <div class="vision-modal-actions">
+          <label class="vision-lookaround-toggle">
+            <span>Look around</span>
+            <input type="checkbox" id="vision-lookaround">
+          </label>
+          <button class="modal-close" id="vision-modal-close">✕</button>
+        </div>
       </div>
       <div class="vision-stage" id="vision-stage">
         <div class="vision-crosshair" id="vision-crosshair" hidden></div>
@@ -303,7 +309,7 @@
     </div>
   </div>
 
-  <script src="vision.js?v=20260716-control-menu"></script>
-  <script src="app.js?v=20260717-control-mods"></script>
+  <script src="vision.js?v=20260717-lookaround"></script>
+  <script src="app.js?v=20260717-lookaround"></script>
 </body>
 </html>
