@@ -18,6 +18,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -44,6 +45,9 @@ app = FastAPI(title="mcbot bot-host")
 manager = BotManager(store_path=BOTS_STORE, request_model=CreateBotRequest)
 macros = MacroEngine(manager, MACRO_STORE)
 atlas: TextureAtlas | None = None
+VOXEL_CACHE_TTL = 4.0
+_voxel_cache: dict[str, tuple] = {}
+_voxel_locks: dict[str, asyncio.Lock] = {}
 
 
 @app.on_event("startup")
@@ -255,10 +259,28 @@ async def bot_voxels(bot_id: str, radius: int = 40, up: int = 40, down: int = 40
     radius = max(8, min(64, radius))
     up = max(4, min(64, up))
     down = max(4, min(64, down))
-    try:
-        return await asyncio.to_thread(_voxel_payload, bot, radius, up, down)
-    except Exception as exc:  # noqa: BLE001 - transient chunk churn / not ready
-        raise HTTPException(503, f"voxels not ready: {type(exc).__name__}")
+    cache_key = (id(bot.client), radius, up, down)
+    loop = asyncio.get_running_loop()
+    lock = _voxel_locks.setdefault(bot_id, asyncio.Lock())
+    async with lock:
+        cached = _voxel_cache.get(bot_id)
+        if (cached is not None and cached[0] == cache_key
+                and loop.time() - cached[1] < VOXEL_CACHE_TTL):
+            payload = cached[2]
+        else:
+            try:
+                payload = await asyncio.to_thread(
+                    _voxel_payload_json, bot, radius, up, down)
+            except Exception as exc:  # noqa: BLE001 - transient chunk churn / not ready
+                raise HTTPException(503, f"voxels not ready: {type(exc).__name__}")
+            _voxel_cache[bot_id] = (cache_key, loop.time(), payload)
+    return Response(payload, media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
+def _voxel_payload_json(bot, radius: int, up: int, down: int) -> bytes:
+    payload = _voxel_payload(bot, radius, up, down)
+    return json.dumps(payload, separators=(",", ":")).encode()
 
 
 def _voxel_payload(bot, radius: int, up: int, down: int) -> dict:
