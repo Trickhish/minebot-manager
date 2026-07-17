@@ -54,6 +54,7 @@ const state = {
 };
 const VISION_SMALL_REFRESH_MS = 30000;
 const VISION_FULL_REFRESH_MS = 1800;
+const VISION_MAP_PIP_REFRESH_MS = 6000;
 const ACTION_BAR_TTL_MS = 5000;
 const OFFLINE_AUTH_STORAGE_KEY = "minebotOfflineAuth:v1";
 let actionBarTimer = null;
@@ -855,7 +856,9 @@ function openMapModal() {
   closeVisionModal();
   $("#map-stage").appendChild($(".map-panel"));
   $("#map-pip-stage").appendChild(Vision.element());
-  Vision.setRefreshInterval(VISION_FULL_REFRESH_MS);
+  // Camera poses still animate every frame; only the expensive voxel geometry
+  // refresh is throttled so map + PiP cannot starve Minecraft keepalives.
+  Vision.setRefreshInterval(VISION_MAP_PIP_REFRESH_MS);
   $("#map-modal").hidden = false;
   requestAnimationFrame(() => { updateMapTarget(); Vision.resize(); });
 }
