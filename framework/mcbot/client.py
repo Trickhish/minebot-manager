@@ -129,6 +129,7 @@ def offline_uuid(username: str) -> str:
 
 _CHAT_PACKETS = ("chat", "system_chat", "player_chat", "profileless_chat")
 _WORLD_PACKETS = ("map_chunk", "unload_chunk", "block_change", "multi_block_change")
+_MAX_PENDING_WORLD_CHUNKS = 48
 
 
 class OnlineModeRequired(Exception):
@@ -621,6 +622,13 @@ class Client:
         self.emit("packet", name, params, raw)
 
     def _queue_world_packet(self, name, raw):
+        # Servers may send hundreds of chunks even when they ignore the
+        # requested view distance. Keep a nearby initial window, but drop the
+        # excess before it can monopolize CPU and delay other bots' keepalive
+        # responses. Later chunks are accepted as the worker drains the queue.
+        if (name == "map_chunk"
+                and self._world_packet_queue.qsize() >= _MAX_PENDING_WORLD_CHUNKS):
+            return
         if self._world_worker is None or not self._world_worker.is_alive():
             self._world_stop.clear()
             self._world_worker = threading.Thread(
