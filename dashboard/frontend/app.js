@@ -939,7 +939,7 @@ function queueMapWheelZoom(event) {
     const delta = mapWheelZoom.delta;
     mapWheelZoom.delta = 0;
     if (!delta) return;
-    const factor = Math.exp(-delta * 0.0018);
+    const factor = Math.exp(-delta * 0.003);
     setMapScale(
       state.mapScale * factor, mapWheelZoom.x, mapWheelZoom.y);
   });
