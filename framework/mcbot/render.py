@@ -48,8 +48,10 @@ def _air_state_ids(block_table, np):
 
 
 def _compute_chunk_tile(sections, air_ids, world, color_cache, resource_pack, np):
-    """(rgb (16,16,3) uint8, height (16,16) int32) for one chunk column.
-    height is -1 where the column is loaded but has no solid block."""
+    """Surface color, height, and block-state ID grids for one chunk column.
+
+    Height is -1 where the column is loaded but has no solid block.
+    """
     chunk_ids = np.concatenate(
         [np.frombuffer(s, dtype=np.uint32).reshape(16, 16, 16) for s in sections],
         axis=0)  # (Y, Z, X), bottom section first
@@ -70,7 +72,7 @@ def _compute_chunk_tile(sections, air_ids, world, color_cache, resource_pack, np
         palette[i] = color
     chunk_rgb = palette[inverse.reshape(surface_ids.shape)]
     height = np.where(has_solid, surface_y, -1).astype(np.int32)
-    return chunk_rgb, height
+    return chunk_rgb, height, surface_ids.astype(np.uint32)
 
 
 def _get_chunk_tiles(world, resource_pack, np):
@@ -96,6 +98,20 @@ def _get_chunk_tiles(world, resource_pack, np):
         if sections is not None:
             tiles[coord] = _compute_chunk_tile(sections, air_ids, world, color_cache, resource_pack, np)
     return tiles
+
+
+def chunk_surface(world, chunk_x: int, chunk_z: int, resource_pack=None):
+    """Return cached ``(state_ids, heights)`` for one loaded chunk column."""
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise ImportError("chunk_surface requires numpy: pip install numpy") from exc
+    if world.block_table is None:
+        raise ValueError("chunk_surface requires a world with a block table")
+    tile = _get_chunk_tiles(world, resource_pack, np).get((chunk_x, chunk_z))
+    if tile is None:
+        return None
+    return tile[2], tile[1]
 
 
 def render_top_down(world, center_x: int, center_z: int, radius: int,
@@ -133,7 +149,7 @@ def render_top_down(world, center_x: int, center_z: int, radius: int,
             tile = tiles.get((cx, cz))
             if tile is None:
                 continue
-            chunk_rgb, chunk_height = tile
+            chunk_rgb, chunk_height, _surface_ids = tile
 
             base_x, base_z = cx * 16, cz * 16
             clip_x0, clip_x1 = max(0, min_x - base_x), min(16, max_x - base_x + 1)

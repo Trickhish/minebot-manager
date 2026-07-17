@@ -220,7 +220,8 @@ async def bot_map(bot_id: str, radius: int = 64,
 
 
 @app.get("/api/bots/{bot_id}/map/tiles/{chunk_x}/{chunk_z}.png")
-async def bot_map_tile(request: Request, bot_id: str, chunk_x: int, chunk_z: int):
+async def bot_map_tile(request: Request, bot_id: str, chunk_x: int, chunk_z: int,
+                       textured: bool = False):
     """A revisioned 16x16 top-down chunk tile for the persistent browser map."""
     bot = manager.get(bot_id)
     if bot is None:
@@ -236,12 +237,14 @@ async def bot_map_tile(request: Request, bot_id: str, chunk_x: int, chunk_z: int
             revision = world.chunk_revisions.get((chunk_x, chunk_z))
             if revision is None:
                 raise HTTPException(404, "chunk not loaded")
-            etag = f'"{id(bot.client):x}-{chunk_x}-{chunk_z}-{revision}"'
+            use_textures = textured and atlas is not None
+            variant = f"-texture-{atlas.version}" if use_textures else ""
+            etag = f'"{id(bot.client):x}-{chunk_x}-{chunk_z}-{revision}{variant}"'
             if request.headers.get("if-none-match") == etag:
                 return Response(status_code=304, headers={"ETag": etag})
             try:
                 png = await asyncio.to_thread(
-                    _render_tile_png, bot, chunk_x, chunk_z)
+                    _render_tile_png, bot, chunk_x, chunk_z, use_textures)
             except Exception as exc:  # noqa: BLE001 - transient chunk churn
                 raise HTTPException(503, f"map tile not ready: {type(exc).__name__}")
     return Response(png, media_type="image/png", headers={
@@ -275,8 +278,11 @@ def _render_png(bot, radius: int, center_x: int, center_z: int) -> bytes:
         radius=radius, center_x=center_x, center_z=center_z))
 
 
-def _render_tile_png(bot, chunk_x: int, chunk_z: int) -> bytes:
+def _render_tile_png(bot, chunk_x: int, chunk_z: int,
+                     textured: bool = False) -> bytes:
     from mcbot.render import encode_png, render_top_down
+    if textured and atlas is not None:
+        return encode_png(_render_textured_tile(bot, chunk_x, chunk_z))
     world = bot.client.world
     # A 17x17 region offset by one block gives the renderer enough context for
     # north-edge height shading; crop back to the exact 16x16 chunk afterward.
@@ -284,6 +290,42 @@ def _render_tile_png(bot, chunk_x: int, chunk_z: int) -> bytes:
         world, chunk_x * 16 + 7, chunk_z * 16 + 7, 8,
         resource_pack=bot.client.resource_pack)
     return encode_png(rgb[1:, 1:])
+
+
+def _render_textured_tile(bot, chunk_x: int, chunk_z: int):
+    import numpy as np
+    from mcbot.colors import get_block_color
+    from mcbot.render import chunk_surface
+
+    world = bot.client.world
+    surface = chunk_surface(world, chunk_x, chunk_z, bot.client.resource_pack)
+    if surface is None:
+        raise ValueError("chunk surface unavailable")
+    state_ids, heights = surface
+    north = chunk_surface(world, chunk_x, chunk_z - 1, bot.client.resource_pack)
+    north_heights = north[1] if north is not None else None
+    output = np.full((16 * TILE, 16 * TILE, 3), (5, 5, 8), np.uint8)
+    block_table = world.block_table
+
+    for state_id in np.unique(state_ids).tolist():
+        name = block_table.name_for(state_id)
+        fallback = np.array(get_block_color(name), np.float32)
+        top_tile = atlas.face_tiles(name)[0]
+        rgba = atlas.tile_rgba(top_tile)
+        if rgba is None:
+            pixels = np.broadcast_to(fallback, (TILE, TILE, 3)).copy()
+        else:
+            alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
+            pixels = rgba[:, :, :3].astype(np.float32) * alpha + fallback * (1 - alpha)
+
+        for z, x in np.argwhere((state_ids == state_id) & (heights >= 0)):
+            north_height = heights[z - 1, x] if z else (
+                north_heights[-1, x] if north_heights is not None else heights[z, x])
+            shade = 1.15 if heights[z, x] > north_height else (
+                0.85 if heights[z, x] < north_height else 1.0)
+            output[z * TILE:(z + 1) * TILE, x * TILE:(x + 1) * TILE] = np.clip(
+                pixels * shade, 0, 255).astype(np.uint8)
+    return output
 
 
 @app.get("/api/textures/atlas.json")

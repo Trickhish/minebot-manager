@@ -606,6 +606,7 @@ const MAP_INTERVAL = 2000;
 const MAP_MIN_SCALE = 0.5;
 const MAP_MAX_SCALE = 32;
 const MAP_TILE_CONCURRENCY = 4;
+const MAP_TEXTURE_SCALE = 8;
 const mapDrag = { active: false, moved: false, x: 0, y: 0, center: null };
 
 function startMap() {
@@ -667,7 +668,10 @@ function setMapStatus(text) {
 }
 
 function clearMapTiles() {
-  for (const tile of state.mapTiles.values()) tile.image?.close?.();
+  for (const tile of state.mapTiles.values()) {
+    tile.image?.close?.();
+    tile.textureImage?.close?.();
+  }
   state.mapTiles.clear();
   state.mapManifest.clear();
   state.mapQueue = [];
@@ -704,22 +708,28 @@ function visibleChunkBounds(margin = 1) {
 function queueVisibleTiles() {
   const bounds = visibleChunkBounds();
   if (!bounds || !state.selected) return;
+  const textured = state.mapScale >= MAP_TEXTURE_SCALE;
   state.mapQueue = state.mapQueue.filter(tile => {
     const visible = tile.generation === state.mapGeneration &&
       tile.cx >= bounds.minX && tile.cx <= bounds.maxX &&
-      tile.cz >= bounds.minZ && tile.cz <= bounds.maxZ;
+      tile.cz >= bounds.minZ && tile.cz <= bounds.maxZ &&
+      (!tile.textured || textured);
     if (!visible) state.mapQueued.delete(tile.queueKey);
     return visible;
   });
+  if (textured) pruneDetailedMapTiles(bounds);
   const additions = [];
   for (const [key, chunk] of state.mapManifest) {
     if (chunk.cx < bounds.minX || chunk.cx > bounds.maxX ||
         chunk.cz < bounds.minZ || chunk.cz > bounds.maxZ) continue;
     const cached = state.mapTiles.get(key);
-    const queueKey = `${state.mapGeneration}:${key}`;
-    if (cached?.revision === chunk.revision || state.mapQueued.has(queueKey)) continue;
+    const revision = textured ? cached?.textureRevision : cached?.revision;
+    const queueKey = `${state.mapGeneration}:${key}:${textured ? "texture" : "flat"}`;
+    if (revision === chunk.revision || state.mapQueued.has(queueKey)) continue;
     state.mapQueued.add(queueKey);
-    additions.push({ ...chunk, key, queueKey, generation: state.mapGeneration });
+    additions.push({
+      ...chunk, key, queueKey, textured, generation: state.mapGeneration,
+    });
   }
   state.mapQueue.push(...additions);
   state.mapQueue.sort((a, b) => {
@@ -730,6 +740,17 @@ function queueVisibleTiles() {
     return ac - bc;
   });
   pumpMapTiles();
+}
+
+function pruneDetailedMapTiles(bounds) {
+  for (const tile of state.mapTiles.values()) {
+    if (!tile.textureImage || (tile.cx >= bounds.minX && tile.cx <= bounds.maxX &&
+        tile.cz >= bounds.minZ && tile.cz <= bounds.maxZ)) continue;
+    tile.textureImage.close?.();
+    tile.textureImage = null;
+    tile.textureRevision = null;
+    tile.textureEtag = null;
+  }
 }
 
 function pumpMapTiles() {
@@ -747,13 +768,16 @@ function pumpMapTiles() {
 async function fetchMapTile(tile) {
   const id = state.selected;
   const cached = state.mapTiles.get(tile.key);
-  const headers = cached?.etag ? { "If-None-Match": cached.etag } : {};
+  const etag = tile.textured ? cached?.textureEtag : cached?.etag;
+  const headers = etag ? { "If-None-Match": etag } : {};
+  const query = tile.textured ? "?textured=1" : "";
   try {
     const response = await fetch(
-      `api/bots/${id}/map/tiles/${tile.cx}/${tile.cz}.png`, { headers });
+      `api/bots/${id}/map/tiles/${tile.cx}/${tile.cz}.png${query}`, { headers });
     if (state.selected !== id || state.mapGeneration !== tile.generation) return;
     if (response.status === 304 && cached) {
-      cached.revision = tile.revision;
+      if (tile.textured) cached.textureRevision = tile.revision;
+      else cached.revision = tile.revision;
       return;
     }
     if (!response.ok) return;
@@ -762,11 +786,22 @@ async function fetchMapTile(tile) {
       image.close?.();
       return;
     }
-    cached?.image?.close?.();
-    state.mapTiles.set(tile.key, {
-      image, revision: tile.revision, etag: response.headers.get("ETag"),
-      cx: tile.cx, cz: tile.cz,
-    });
+    // A flat and a textured request may overlap while crossing the zoom
+    // threshold. Re-read the shared entry so whichever finishes last keeps
+    // both images instead of replacing the other request's result.
+    const entry = state.mapTiles.get(tile.key) || { cx: tile.cx, cz: tile.cz };
+    if (tile.textured) {
+      entry.textureImage?.close?.();
+      entry.textureImage = image;
+      entry.textureRevision = tile.revision;
+      entry.textureEtag = response.headers.get("ETag");
+    } else {
+      entry.image?.close?.();
+      entry.image = image;
+      entry.revision = tile.revision;
+      entry.etag = response.headers.get("ETag");
+    }
+    state.mapTiles.set(tile.key, entry);
     setMapStatus(null);
     drawMap();
   } catch { /* retry after the next manifest update */ }
@@ -787,11 +822,14 @@ function drawMap() {
 
   const tileSize = 16 * state.mapScale;
   for (const tile of state.mapTiles.values()) {
+    const image = state.mapScale >= MAP_TEXTURE_SCALE && tile.textureImage
+      ? tile.textureImage : tile.image;
+    if (!image) continue;
     const x = rect.width / 2 + (tile.cx * 16 - state.mapCenter.x) * state.mapScale;
     const y = rect.height / 2 + (tile.cz * 16 - state.mapCenter.z) * state.mapScale;
     if (x + tileSize < 0 || y + tileSize < 0 || x > rect.width || y > rect.height)
       continue;
-    ctx.drawImage(tile.image, Math.round(x), Math.round(y),
+    ctx.drawImage(image, Math.round(x), Math.round(y),
                   Math.ceil(tileSize), Math.ceil(tileSize));
   }
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 
 from mcbot.resourcepack import ResourcePack, _SPECIAL_NAMES
 from mcbot.png import decode_png, encode_png
@@ -94,9 +95,13 @@ class TextureAtlas:
         self.png_path = os.path.join(cache_dir, "atlas.png")
         self._meta_path = os.path.join(cache_dir, "atlas_meta.json")
         self.stem_to_tile: dict[str, int] = {}
+        self._face_tiles_cache: dict[str, tuple[int, int, int]] = {}
         self.cols = self.rows = 0
+        self._atlas_rgba = None
+        self._atlas_lock = threading.Lock()
         os.makedirs(cache_dir, exist_ok=True)
         self._build_or_load()
+        self.version = os.stat(self.png_path).st_mtime_ns
 
     # -- build / cache ------------------------------------------------------
     def _build_or_load(self) -> None:
@@ -188,6 +193,9 @@ class TextureAtlas:
     def face_tiles(self, name: str):
         """(top, side, bottom) atlas tile indices for a block name; -1 where no
         texture resolves (renderer falls back to the flat color there)."""
+        cached = self._face_tiles_cache.get(name)
+        if cached is not None:
+            return cached
         cands = self._stem_candidates(name)
 
         def pick(suffixes):
@@ -204,4 +212,27 @@ class TextureAtlas:
             bottom = self.stem_to_tile.get("dirt", -1)
         else:
             bottom = pick(("_bottom", "_top", ""))
-        return top, side, bottom
+        result = (top, side, bottom)
+        self._face_tiles_cache[name] = result
+        return result
+
+    def tile_rgba(self, tile: int):
+        """Return one atlas tile as a cached 16x16x4 numpy view."""
+        if tile < 0:
+            return None
+        if self._atlas_rgba is None:
+            with self._atlas_lock:
+                if self._atlas_rgba is None:
+                    import numpy as np
+                    with open(self.png_path, "rb") as fh:
+                        width, height, bpp, pixels = decode_png(fh.read())
+                    image = np.frombuffer(pixels, np.uint8).reshape(height, width, bpp)
+                    if bpp == 3:
+                        alpha = np.full((height, width, 1), 255, np.uint8)
+                        image = np.concatenate((image, alpha), axis=2)
+                    self._atlas_rgba = image
+        row, col = divmod(tile, self.cols)
+        return self._atlas_rgba[
+            row * TILE:(row + 1) * TILE,
+            col * TILE:(col + 1) * TILE,
+        ]
