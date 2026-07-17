@@ -31,6 +31,7 @@ from .buffer import BufferUnderrun
 from .connection import Connection
 from .inventory import Inventory, make_slot_value
 from .items import get_item_table
+from .pathfinding import find_path
 from .protocol import (
     Protocol,
     available_protocols,
@@ -978,7 +979,7 @@ class Client:
             _time.sleep(tick)
 
     def navigate_to(self, x, z):
-        """Start replaceable, collision-aware direct walking toward an X/Z target."""
+        """Start replaceable, collision-aware pathfinding to an X/Z target."""
         x, z = float(x), float(z)
         with self._navigation_lock:
             self._navigation_generation += 1
@@ -1000,20 +1001,125 @@ class Client:
 
     def _navigate_loop(self, generation, target_x, target_z):
         target = {"x": target_x, "z": target_z}
-        def event(phase):
+        def event(phase, **details):
             return {"phase": phase, "target": target,
-                    "navigation_id": generation}
+                    "navigation_id": generation, **details}
         self.emit("navigation", event("started"))
+
+        # Legacy protocols without decoded chunks retain the old direct walker.
+        if self.world is None:
+            self.emit("navigation", event("direct"))
+            self._navigate_direct_loop(
+                generation, target_x, target_z, event)
+            return
+
+        started = _time.monotonic()
+        initial = self.get_position()
+        initial_distance = math.hypot(
+            target_x - initial["x"], target_z - initial["z"])
+        max_seconds = max(
+            20.0, initial_distance / max(self.walk_speed, 0.1) * 5.0)
+        replans = 0
+
+        while self.running and self.state == "play":
+            if self._navigation_cancelled(generation):
+                self.emit("navigation", event("cancelled"))
+                return
+            position = self.get_position()
+            if math.hypot(
+                    target_x - position["x"], target_z - position["z"]) <= 0.7:
+                self._finish_navigation(generation)
+                self.emit("navigation", event("arrived"))
+                return
+
+            if _time.monotonic() - started > max_seconds:
+                self._finish_navigation(generation)
+                self.emit("navigation", event("stuck"))
+                return
+
+            self.emit("navigation", event("planning", replan=replans))
+            with self.world.lock:
+                result = find_path(
+                    self.world,
+                    (position["x"], position["y"], position["z"]),
+                    (target_x, target_z),
+                    _is_passable,
+                )
+            if result is None:
+                self._finish_navigation(generation)
+                self.emit("navigation", event("no_path", replan=replans))
+                return
+
+            path = result.nodes[1:]
+            self.emit("navigation", event(
+                "path_found", waypoints=len(path), visited=result.visited,
+                replan=replans))
+            if self._follow_path(generation, path, started, max_seconds):
+                self._finish_navigation(generation)
+                self.emit("navigation", event("arrived"))
+                return
+            if self._navigation_cancelled(generation):
+                self.emit("navigation", event("cancelled"))
+                return
+            replans += 1
+            if replans > 3:
+                self._finish_navigation(generation)
+                self.emit("navigation", event("stuck", replans=replans))
+                return
+
+        self._finish_navigation(generation)
+        self.emit("navigation", event("cancelled"))
+
+    def _follow_path(self, generation, path, started, max_seconds):
+        """Walk path nodes. False requests a replan after lost progress."""
+        for block_x, feet_y, block_z in path:
+            waypoint_x, waypoint_z = block_x + 0.5, block_z + 0.5
+            best = float("inf")
+            last_progress = _time.monotonic()
+            tick = 0
+            while self.running and self.state == "play":
+                if self._navigation_cancelled(generation):
+                    return False
+                if _time.monotonic() - started > max_seconds:
+                    return False
+                position = self.get_position()
+                dx = waypoint_x - position["x"]
+                dz = waypoint_z - position["z"]
+                horizontal = math.hypot(dx, dz)
+                vertical = abs(feet_y - position["y"])
+                distance = horizontal + vertical * 0.25
+                if horizontal <= 0.3 and vertical <= 0.65:
+                    break
+                now = _time.monotonic()
+                if distance < best - 0.08:
+                    best = distance
+                    last_progress = now
+                elif now - last_progress > 3.0:
+                    return False
+
+                yaw = math.degrees(math.atan2(-dx, dz))
+                # Wait over the destination column while gravity completes a
+                # planned drop. One-tick jump pulses help full-block climbs on
+                # servers whose collision correction is stricter than ours.
+                forward = 0.0 if horizontal <= 0.22 else 1.0
+                jump = (feet_y > position["y"] + 0.55
+                        and horizontal < 1.1
+                        and bool(position.get("on_ground"))
+                        and tick % 6 == 0)
+                self.control_step(
+                    forward, 0.0, jump, False, yaw, 0.0, 0.05)
+                tick += 1
+                _time.sleep(0.05)
+        return True
+
+    def _navigate_direct_loop(self, generation, target_x, target_z, event):
         started = _time.monotonic()
         best_distance = float("inf")
         last_progress = started
         max_seconds = None
         tick = 0
-
         while self.running and self.state == "play":
-            with self._navigation_lock:
-                cancelled = self._navigation_active != generation
-            if cancelled:
+            if self._navigation_cancelled(generation):
                 self.emit("navigation", event("cancelled"))
                 return
             position = self.get_position()
@@ -1024,8 +1130,8 @@ class Client:
                 self.emit("navigation", event("arrived"))
                 return
             if max_seconds is None:
-                max_seconds = max(15.0, distance / max(self.walk_speed, 0.1) * 3.0)
-
+                max_seconds = max(
+                    15.0, distance / max(self.walk_speed, 0.1) * 3.0)
             now = _time.monotonic()
             if distance < best_distance - 0.2:
                 best_distance = distance
@@ -1034,23 +1140,22 @@ class Client:
                 self._finish_navigation(generation)
                 self.emit("navigation", event("stuck"))
                 return
-
             if now - started > max_seconds:
                 self._finish_navigation(generation)
                 self.emit("navigation", event("stuck"))
                 return
-
             yaw = math.degrees(math.atan2(-dx, dz))
-            # Periodic jump pulses clear ordinary one-block terrain. Navigation
-            # is direct steering, so larger obstacles still report "stuck".
             jump = (now - last_progress > 0.8 and tick % 10 == 0
                     and bool(position.get("on_ground")))
             self.control_step(1.0, 0.0, jump, False, yaw, 0.0, 0.05)
             tick += 1
             _time.sleep(0.05)
-
         self._finish_navigation(generation)
         self.emit("navigation", event("cancelled"))
+
+    def _navigation_cancelled(self, generation):
+        with self._navigation_lock:
+            return self._navigation_active != generation
 
     def _finish_navigation(self, generation):
         with self._navigation_lock:
