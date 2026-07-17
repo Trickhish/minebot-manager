@@ -93,18 +93,7 @@
             <div class="map-panel">
               <div class="map-toolbar">
                 <span class="map-title">Minimap</span>
-                <label class="map-radius">radius
-                  <select id="map-radius">
-                    <option value="16">16</option>
-                    <option value="32">32</option>
-                    <option value="48">48</option>
-                    <option value="64" selected>64</option>
-                    <option value="96">96</option>
-                    <option value="128">128</option>
-                    <option value="192">192</option>
-                    <option value="256">256</option>
-                  </select>
-                </label>
+                <span class="map-scale" id="map-scale">4 px/block</span>
                 <label class="map-live"><input type="checkbox" id="map-live" checked> live</label>
                 <div class="map-tools">
                   <button id="map-zoom-out" class="mini map-tool" title="Zoom out" aria-label="Zoom out">−</button>
@@ -114,7 +103,7 @@
                 </div>
               </div>
               <div class="map-view" id="map-view">
-                <img id="map-img" alt="minimap">
+                <canvas id="map-canvas" aria-label="Interactive minimap"></canvas>
                 <div class="map-target" id="map-target" hidden></div>
                 <div class="map-readout" id="map-readout" hidden></div>
                 <div class="map-status" id="map-status">waiting for chunks…</div>
@@ -298,6 +287,6 @@
   </div>
 
   <script src="vision.js?v=20260716-control-menu"></script>
-  <script src="app.js?v=20260717-chunk-stream-fix"></script>
+  <script src="app.js?v=20260717-tiled-map"></script>
 </body>
 </html>

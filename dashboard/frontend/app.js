@@ -48,9 +48,10 @@ const api = {
 
 const state = {
   bots: [], selected: null, ws: null,
-  mapTimer: null, mapUrl: null, mapBusy: false, mapPending: false,
-  mapCenter: null, mapFrame: null, mapFollow: true, mapPosition: null,
-  mapTarget: null,
+  mapTimer: null, mapBusy: false, mapGeneration: 0,
+  mapCenter: null, mapFollow: true, mapPosition: null, mapScale: 4,
+  mapTarget: null, mapTiles: new Map(), mapManifest: new Map(),
+  mapQueue: [], mapQueued: new Set(), mapActiveFetches: 0,
 };
 const VISION_SMALL_REFRESH_MS = 30000;
 const VISION_FULL_REFRESH_MS = 1800;
@@ -203,7 +204,9 @@ function applyStatusPartial(stateName, data) {
 
 function applyPosition(p) {
   if (!p || p.x == null) return;
-  state.mapPosition = { x: p.x, z: p.z };
+  state.mapPosition = { x: p.x, z: p.z, yaw: p.yaw || 0 };
+  if (state.mapFollow) state.mapCenter = { x: p.x, z: p.z };
+  drawMap();
   $("#d-position").textContent =
     `x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  z ${p.z.toFixed(1)}  ` +
     `(yaw ${Math.round(p.yaw)}°)`;
@@ -599,17 +602,27 @@ function abbrev(name) {
 }
 
 // -- minimap ----------------------------------------------------------------
-const MAP_INTERVAL = 1500;
-const MAP_RADII = [16, 32, 48, 64, 96, 128, 192, 256];
+const MAP_INTERVAL = 2000;
+const MAP_MIN_SCALE = 0.5;
+const MAP_MAX_SCALE = 32;
+const MAP_TILE_CONCURRENCY = 4;
 const mapDrag = { active: false, moved: false, x: 0, y: 0, center: null };
 
 function startMap() {
+  state.mapGeneration += 1;
+  clearMapTiles();
   state.mapCenter = null;
-  state.mapFrame = null;
   state.mapFollow = true;
-  state.mapPosition = null;
+  const bot = state.bots.find(item => item.id === state.selected);
+  state.mapPosition = bot?.position ? {
+    x: bot.position.x, z: bot.position.z, yaw: bot.position.yaw || 0,
+  } : null;
+  if (state.mapPosition)
+    state.mapCenter = { x: state.mapPosition.x, z: state.mapPosition.z };
+  state.mapScale = 4;
   state.mapTarget = null;
-  state.mapPending = false;
+  updateMapScale();
+  resizeMapCanvas();
   updateMapTarget();
   setMapStatus("waiting for chunks…");
   tickMap(true);
@@ -618,69 +631,33 @@ function startMap() {
 
 function stopMap() {
   if (state.mapTimer) { clearInterval(state.mapTimer); state.mapTimer = null; }
-  if (state.mapUrl) { URL.revokeObjectURL(state.mapUrl); state.mapUrl = null; }
-  const img = $("#map-img");
-  img.classList.remove("ready");
-  img.style.transform = "";
-  img.removeAttribute("src");
+  state.mapGeneration += 1;
+  clearMapTiles();
+  drawMap();
 }
 
 async function tickMap(force = false) {
   const id = state.selected;
-  if (!id) return;
-  if (state.mapBusy) { state.mapPending = state.mapPending || force; return; }
+  if (!id || state.mapBusy) return;
   if (!force && !$("#map-live").checked) return;
   state.mapBusy = true;
+  const generation = state.mapGeneration;
   try {
-    const radius = Number($("#map-radius").value);
-    let center = state.mapCenter;
-    if (state.mapFollow && state.mapPosition)
-      center = { x: Math.floor(state.mapPosition.x), z: Math.floor(state.mapPosition.z) };
-    const query = new URLSearchParams({ radius });
-    if (center) {
-      query.set("center_x", Math.round(center.x));
-      query.set("center_z", Math.round(center.z));
+    const response = await fetch(`api/bots/${id}/map/chunks`, { cache: "no-store" });
+    if (state.selected !== id || state.mapGeneration !== generation) return;
+    if (!response.ok) {
+      if (!state.mapTiles.size)
+        setMapStatus((await response.json().catch(() => ({}))).detail || "map not ready");
+      return;
     }
-    const r = await fetch(`api/bots/${id}/map.png?${query}`, { cache: "no-store" });
-    if (state.selected !== id) return;
-    if (r.status === 200) {
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const img = $("#map-img");
-      img.src = url;
-      await img.decode().catch(() => {});
-      if (state.selected !== id) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      img.classList.add("ready");
-      if (state.mapUrl) URL.revokeObjectURL(state.mapUrl);
-      state.mapUrl = url;
-      state.mapFrame = {
-        x: Number(r.headers.get("X-Map-Center-X")),
-        z: Number(r.headers.get("X-Map-Center-Z")),
-        radius: Number(r.headers.get("X-Map-Radius")),
-      };
-      if (!state.mapCenter || state.mapFollow)
-        state.mapCenter = { x: state.mapFrame.x, z: state.mapFrame.z };
-      img.style.transform = "";
-      requestAnimationFrame(updateMapTarget);
-      setMapStatus(null);
-    } else {
-      // 503 while the world isn't ready — keep the last frame if we have one.
-      if (!$("#map-img").classList.contains("ready")) {
-        const msg = (await r.json().catch(() => ({}))).detail || "map not ready";
-        setMapStatus(msg);
-      }
-    }
+    const payload = await response.json();
+    state.mapManifest = new Map(payload.chunks.map(
+      ([cx, cz, revision]) => [`${cx},${cz}`, { cx, cz, revision }]));
+    queueVisibleTiles();
+    if (!payload.chunks.length && !state.mapTiles.size)
+      setMapStatus("waiting for chunks…");
   } catch { /* transient; next tick retries */ }
-  finally {
-    state.mapBusy = false;
-    if (state.mapPending) {
-      state.mapPending = false;
-      tickMap(true);
-    }
-  }
+  finally { state.mapBusy = false; }
 }
 
 function setMapStatus(text) {
@@ -689,71 +666,238 @@ function setMapStatus(text) {
   el.classList.toggle("hidden", !text);
 }
 
-function mapPoint(clientX, clientY, frame = state.mapFrame) {
-  const rect = $("#map-img").getBoundingClientRect();
-  if (!frame || !rect.width || clientX < rect.left || clientX > rect.right ||
-      clientY < rect.top || clientY > rect.bottom) return null;
-  const size = frame.radius * 2 + 1;
+function clearMapTiles() {
+  for (const tile of state.mapTiles.values()) tile.image?.close?.();
+  state.mapTiles.clear();
+  state.mapManifest.clear();
+  state.mapQueue = [];
+  state.mapQueued.clear();
+}
+
+function resizeMapCanvas() {
+  const canvas = $("#map-canvas");
+  const rect = $("#map-view").getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  drawMap();
+  queueVisibleTiles();
+}
+
+function visibleChunkBounds(margin = 1) {
+  const rect = $("#map-view").getBoundingClientRect();
+  if (!state.mapCenter || !rect.width || !rect.height) return null;
+  const halfX = rect.width / state.mapScale / 2;
+  const halfZ = rect.height / state.mapScale / 2;
   return {
-    x: frame.x + ((clientX - rect.left) / rect.width - 0.5) * size,
-    z: frame.z + ((clientY - rect.top) / rect.height - 0.5) * size,
+    minX: Math.floor((state.mapCenter.x - halfX) / 16) - margin,
+    maxX: Math.floor((state.mapCenter.x + halfX) / 16) + margin,
+    minZ: Math.floor((state.mapCenter.z - halfZ) / 16) - margin,
+    maxZ: Math.floor((state.mapCenter.z + halfZ) / 16) + margin,
+  };
+}
+
+function queueVisibleTiles() {
+  const bounds = visibleChunkBounds();
+  if (!bounds || !state.selected) return;
+  state.mapQueue = state.mapQueue.filter(tile => {
+    const visible = tile.generation === state.mapGeneration &&
+      tile.cx >= bounds.minX && tile.cx <= bounds.maxX &&
+      tile.cz >= bounds.minZ && tile.cz <= bounds.maxZ;
+    if (!visible) state.mapQueued.delete(tile.queueKey);
+    return visible;
+  });
+  const additions = [];
+  for (const [key, chunk] of state.mapManifest) {
+    if (chunk.cx < bounds.minX || chunk.cx > bounds.maxX ||
+        chunk.cz < bounds.minZ || chunk.cz > bounds.maxZ) continue;
+    const cached = state.mapTiles.get(key);
+    const queueKey = `${state.mapGeneration}:${key}`;
+    if (cached?.revision === chunk.revision || state.mapQueued.has(queueKey)) continue;
+    state.mapQueued.add(queueKey);
+    additions.push({ ...chunk, key, queueKey, generation: state.mapGeneration });
+  }
+  state.mapQueue.push(...additions);
+  state.mapQueue.sort((a, b) => {
+    const ac = Math.hypot(a.cx * 16 + 8 - state.mapCenter.x,
+                          a.cz * 16 + 8 - state.mapCenter.z);
+    const bc = Math.hypot(b.cx * 16 + 8 - state.mapCenter.x,
+                          b.cz * 16 + 8 - state.mapCenter.z);
+    return ac - bc;
+  });
+  pumpMapTiles();
+}
+
+function pumpMapTiles() {
+  while (state.mapActiveFetches < MAP_TILE_CONCURRENCY && state.mapQueue.length) {
+    const tile = state.mapQueue.shift();
+    state.mapActiveFetches += 1;
+    fetchMapTile(tile).finally(() => {
+      state.mapActiveFetches -= 1;
+      state.mapQueued.delete(tile.queueKey);
+      pumpMapTiles();
+    });
+  }
+}
+
+async function fetchMapTile(tile) {
+  const id = state.selected;
+  const cached = state.mapTiles.get(tile.key);
+  const headers = cached?.etag ? { "If-None-Match": cached.etag } : {};
+  try {
+    const response = await fetch(
+      `api/bots/${id}/map/tiles/${tile.cx}/${tile.cz}.png`, { headers });
+    if (state.selected !== id || state.mapGeneration !== tile.generation) return;
+    if (response.status === 304 && cached) {
+      cached.revision = tile.revision;
+      return;
+    }
+    if (!response.ok) return;
+    const image = await createImageBitmap(await response.blob());
+    if (state.selected !== id || state.mapGeneration !== tile.generation) {
+      image.close?.();
+      return;
+    }
+    cached?.image?.close?.();
+    state.mapTiles.set(tile.key, {
+      image, revision: tile.revision, etag: response.headers.get("ETag"),
+      cx: tile.cx, cz: tile.cz,
+    });
+    setMapStatus(null);
+    drawMap();
+  } catch { /* retry after the next manifest update */ }
+}
+
+function drawMap() {
+  const canvas = $("#map-canvas");
+  if (!canvas) return;
+  const rect = $("#map-view").getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const dpr = canvas.width / rect.width;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#080b0e";
+  ctx.fillRect(0, 0, rect.width, rect.height);
+  if (!state.mapCenter) return;
+
+  const tileSize = 16 * state.mapScale;
+  for (const tile of state.mapTiles.values()) {
+    const x = rect.width / 2 + (tile.cx * 16 - state.mapCenter.x) * state.mapScale;
+    const y = rect.height / 2 + (tile.cz * 16 - state.mapCenter.z) * state.mapScale;
+    if (x + tileSize < 0 || y + tileSize < 0 || x > rect.width || y > rect.height)
+      continue;
+    ctx.drawImage(tile.image, Math.round(x), Math.round(y),
+                  Math.ceil(tileSize), Math.ceil(tileSize));
+  }
+
+  if (state.mapScale >= 12) drawBlockGrid(ctx, rect);
+  drawMapBot(ctx, rect);
+  updateMapTarget();
+}
+
+function drawBlockGrid(ctx, rect) {
+  const scale = state.mapScale;
+  const startX = rect.width / 2 +
+    (Math.floor((state.mapCenter.x - rect.width / scale / 2)) - state.mapCenter.x) * scale;
+  const startZ = rect.height / 2 +
+    (Math.floor((state.mapCenter.z - rect.height / scale / 2)) - state.mapCenter.z) * scale;
+  ctx.beginPath();
+  for (let x = startX; x < rect.width; x += scale) { ctx.moveTo(x, 0); ctx.lineTo(x, rect.height); }
+  for (let y = startZ; y < rect.height; y += scale) { ctx.moveTo(0, y); ctx.lineTo(rect.width, y); }
+  ctx.strokeStyle = "rgba(0, 0, 0, .18)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function drawMapBot(ctx, rect) {
+  const position = state.mapPosition;
+  if (!position) return;
+  const x = rect.width / 2 + (position.x - state.mapCenter.x) * state.mapScale;
+  const y = rect.height / 2 + (position.z - state.mapCenter.z) * state.mapScale;
+  if (x < -12 || y < -12 || x > rect.width + 12 || y > rect.height + 12) return;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-(position.yaw || 0) * Math.PI / 180);
+  ctx.beginPath();
+  ctx.moveTo(0, -9); ctx.lineTo(6, 7); ctx.lineTo(0, 4); ctx.lineTo(-6, 7);
+  ctx.closePath();
+  ctx.fillStyle = "#ef4f4f";
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+function mapPoint(clientX, clientY) {
+  const rect = $("#map-view").getBoundingClientRect();
+  if (!state.mapCenter || !rect.width || clientX < rect.left || clientX > rect.right ||
+      clientY < rect.top || clientY > rect.bottom) return null;
+  return {
+    x: state.mapCenter.x + (clientX - rect.left - rect.width / 2) / state.mapScale,
+    z: state.mapCenter.z + (clientY - rect.top - rect.height / 2) / state.mapScale,
     rect,
   };
 }
 
-function setMapRadius(radius, anchorX = null, anchorY = null) {
-  const oldFrame = state.mapFrame;
-  const oldPoint = anchorX == null ? null : mapPoint(anchorX, anchorY, oldFrame);
-  const next = MAP_RADII.reduce((best, value) =>
-    Math.abs(value - radius) < Math.abs(best - radius) ? value : best, MAP_RADII[0]);
-  $("#map-radius").value = String(next);
-  if (oldPoint && oldFrame) {
+function setMapScale(scale, anchorX = null, anchorY = null) {
+  const oldPoint = anchorX == null ? null : mapPoint(anchorX, anchorY);
+  const next = Math.max(MAP_MIN_SCALE, Math.min(MAP_MAX_SCALE, scale));
+  if (oldPoint) {
     const rect = oldPoint.rect;
-    const nextSize = next * 2 + 1;
     state.mapCenter = {
-      x: oldPoint.x - ((anchorX - rect.left) / rect.width - 0.5) * nextSize,
-      z: oldPoint.z - ((anchorY - rect.top) / rect.height - 0.5) * nextSize,
+      x: oldPoint.x - (anchorX - rect.left - rect.width / 2) / next,
+      z: oldPoint.z - (anchorY - rect.top - rect.height / 2) / next,
     };
     state.mapFollow = false;
   }
-  tickMap(true);
+  state.mapScale = next;
+  updateMapScale();
+  drawMap();
+  queueVisibleTiles();
 }
 
 function zoomMap(direction, clientX = null, clientY = null) {
-  const current = Number($("#map-radius").value);
-  const index = MAP_RADII.indexOf(current);
-  const nextIndex = Math.max(0, Math.min(MAP_RADII.length - 1, index + direction));
-  if (nextIndex !== index) setMapRadius(MAP_RADII[nextIndex], clientX, clientY);
+  const factor = direction > 0 ? 0.75 : 4 / 3;
+  setMapScale(state.mapScale * factor, clientX, clientY);
+}
+
+function updateMapScale() {
+  const value = state.mapScale >= 1
+    ? `${state.mapScale.toFixed(state.mapScale < 10 ? 1 : 0)} px/block`
+    : `1 px/${Math.round(1 / state.mapScale)} blocks`;
+  $("#map-scale").textContent = value;
 }
 
 function recenterMap() {
   state.mapFollow = true;
   state.mapCenter = state.mapPosition
     ? { x: state.mapPosition.x, z: state.mapPosition.z } : null;
-  tickMap(true);
+  drawMap();
+  queueVisibleTiles();
 }
 
 function updateMapTarget() {
   const marker = $("#map-target");
   const target = state.mapTarget;
-  const frame = state.mapFrame;
-  const img = $("#map-img");
   const view = $("#map-view");
-  if (!target || !frame || !img.classList.contains("ready")) {
+  if (!target || !state.mapCenter) {
     marker.hidden = true;
     return;
   }
-  const rect = img.getBoundingClientRect();
-  const viewRect = view.getBoundingClientRect();
-  const size = frame.radius * 2 + 1;
-  const px = (target.x - frame.x) / size + 0.5;
-  const pz = (target.z - frame.z) / size + 0.5;
-  if (px < 0 || px > 1 || pz < 0 || pz > 1) {
+  const rect = view.getBoundingClientRect();
+  const x = rect.width / 2 + (target.x - state.mapCenter.x) * state.mapScale;
+  const y = rect.height / 2 + (target.z - state.mapCenter.z) * state.mapScale;
+  if (x < 0 || x > rect.width || y < 0 || y > rect.height) {
     marker.hidden = true;
     return;
   }
-  marker.style.left = `${rect.left - viewRect.left + px * rect.width}px`;
-  marker.style.top = `${rect.top - viewRect.top + pz * rect.height}px`;
+  marker.style.left = `${x}px`;
+  marker.style.top = `${y}px`;
   marker.className = `map-target ${target.phase || "started"}`;
   marker.hidden = false;
 }
@@ -788,7 +932,7 @@ mapView.addEventListener("pointerdown", (event) => {
   mapDrag.moved = false;
   mapDrag.x = event.clientX;
   mapDrag.y = event.clientY;
-  mapDrag.center = { ...(state.mapFrame || state.mapCenter) };
+  mapDrag.center = { ...state.mapCenter };
   mapView.setPointerCapture(event.pointerId);
 });
 mapView.addEventListener("pointermove", (event) => {
@@ -804,7 +948,12 @@ mapView.addEventListener("pointermove", (event) => {
   if (Math.hypot(dx, dy) > 5) mapDrag.moved = true;
   if (mapDrag.moved) {
     mapView.classList.add("dragging");
-    $("#map-img").style.transform = `translate(${dx}px, ${dy}px)`;
+    state.mapFollow = false;
+    state.mapCenter = {
+      x: mapDrag.center.x - dx / state.mapScale,
+      z: mapDrag.center.z - dy / state.mapScale,
+    };
+    drawMap();
   }
 });
 mapView.addEventListener("pointerup", (event) => {
@@ -813,16 +962,8 @@ mapView.addEventListener("pointerup", (event) => {
   const dy = event.clientY - mapDrag.y;
   mapDrag.active = false;
   mapView.classList.remove("dragging");
-  if (mapDrag.moved && state.mapFrame) {
-    const rect = $("#map-img").getBoundingClientRect();
-    const size = state.mapFrame.radius * 2 + 1;
-    state.mapCenter = {
-      x: mapDrag.center.x - dx * size / rect.width,
-      z: mapDrag.center.z - dy * size / rect.height,
-    };
-    state.mapFollow = false;
-    $("#map-img").style.transform = "";
-    tickMap(true);
+  if (mapDrag.moved) {
+    queueVisibleTiles();
   } else {
     const point = mapPoint(event.clientX, event.clientY);
     if (point) navigateFromMap(point);
@@ -831,7 +972,6 @@ mapView.addEventListener("pointerup", (event) => {
 mapView.addEventListener("pointercancel", () => {
   mapDrag.active = false;
   mapView.classList.remove("dragging");
-  $("#map-img").style.transform = "";
 });
 mapView.addEventListener("pointerleave", () => {
   if (!mapDrag.active) $("#map-readout").hidden = true;
@@ -841,15 +981,14 @@ mapView.addEventListener("wheel", (event) => {
   zoomMap(event.deltaY > 0 ? 1 : -1, event.clientX, event.clientY);
 }, { passive: false });
 
-$("#map-radius").addEventListener("change", (event) => {
-  setMapRadius(Number(event.target.value));
-});
 $("#map-zoom-out").addEventListener("click", () => zoomMap(1));
 $("#map-zoom-in").addEventListener("click", () => zoomMap(-1));
 $("#map-recenter").addEventListener("click", recenterMap);
 $("#map-live").addEventListener("change", (e) => {
   if (e.target.checked && state.selected) tickMap(true);
 });
+
+new ResizeObserver(resizeMapCanvas).observe(mapView);
 
 function openMapModal() {
   if (!state.selected) return;
@@ -860,7 +999,7 @@ function openMapModal() {
   // refresh is throttled so map + PiP cannot starve Minecraft keepalives.
   Vision.setRefreshInterval(VISION_MAP_PIP_REFRESH_MS);
   $("#map-modal").hidden = false;
-  requestAnimationFrame(() => { updateMapTarget(); Vision.resize(); });
+  requestAnimationFrame(() => { resizeMapCanvas(); Vision.resize(); });
 }
 function closeMapModal() {
   if ($("#map-modal").hidden) return;
@@ -868,7 +1007,7 @@ function closeMapModal() {
   $(".right-col").insertBefore($(".map-panel"), $(".vision-panel"));
   $(".vision-view").insertBefore(Vision.element(), $("#vision-status"));
   Vision.setRefreshInterval(VISION_SMALL_REFRESH_MS);
-  requestAnimationFrame(() => { updateMapTarget(); Vision.resize(); });
+  requestAnimationFrame(() => { resizeMapCanvas(); Vision.resize(); });
 }
 $("#map-expand").addEventListener("click", openMapModal);
 $("#map-modal-close").addEventListener("click", closeMapModal);

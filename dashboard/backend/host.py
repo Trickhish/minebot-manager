@@ -21,7 +21,7 @@ import asyncio
 import json
 import os
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 
 from macros import MacroEngine, MacroError
@@ -48,6 +48,7 @@ atlas: TextureAtlas | None = None
 VOXEL_CACHE_TTL = 4.0
 _voxel_cache: dict[str, tuple] = {}
 _voxel_locks: dict[str, asyncio.Lock] = {}
+_map_locks: dict[str, asyncio.Lock] = {}
 
 
 @app.on_event("startup")
@@ -218,10 +219,71 @@ async def bot_map(bot_id: str, radius: int = 64,
                     })
 
 
+@app.get("/api/bots/{bot_id}/map/tiles/{chunk_x}/{chunk_z}.png")
+async def bot_map_tile(request: Request, bot_id: str, chunk_x: int, chunk_z: int):
+    """A revisioned 16x16 top-down chunk tile for the persistent browser map."""
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    world = bot.client.world
+    if world is None:
+        raise HTTPException(503, "world tracking unavailable for this bot/version")
+    if bot.state != "play":
+        raise HTTPException(503, f"bot not in play state (state={bot.state})")
+    lock = _map_locks.setdefault(bot_id, asyncio.Lock())
+    async with lock:
+        with world.lock:
+            revision = world.chunk_revisions.get((chunk_x, chunk_z))
+            if revision is None:
+                raise HTTPException(404, "chunk not loaded")
+            etag = f'"{id(bot.client):x}-{chunk_x}-{chunk_z}-{revision}"'
+            if request.headers.get("if-none-match") == etag:
+                return Response(status_code=304, headers={"ETag": etag})
+            try:
+                png = await asyncio.to_thread(
+                    _render_tile_png, bot, chunk_x, chunk_z)
+            except Exception as exc:  # noqa: BLE001 - transient chunk churn
+                raise HTTPException(503, f"map tile not ready: {type(exc).__name__}")
+    return Response(png, media_type="image/png", headers={
+        "Cache-Control": "no-cache", "ETag": etag,
+        "X-Chunk-X": str(chunk_x), "X-Chunk-Z": str(chunk_z),
+    })
+
+
+@app.get("/api/bots/{bot_id}/map/chunks")
+async def bot_map_chunks(bot_id: str):
+    """Loaded chunk coordinates and revisions for incremental tile syncing."""
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    world = bot.client.world
+    if world is None:
+        raise HTTPException(503, "world tracking unavailable for this bot/version")
+    if bot.state != "play":
+        raise HTTPException(503, f"bot not in play state (state={bot.state})")
+    with world.lock:
+        chunks = [[cx, cz, revision] for (cx, cz), revision
+                  in world.chunk_revisions.items()]
+    return Response(json.dumps({"chunks": chunks}, separators=(",", ":")),
+                    media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
 def _render_png(bot, radius: int, center_x: int, center_z: int) -> bytes:
     from mcbot.render import encode_png
     return encode_png(bot.client.render_map(
         radius=radius, center_x=center_x, center_z=center_z))
+
+
+def _render_tile_png(bot, chunk_x: int, chunk_z: int) -> bytes:
+    from mcbot.render import encode_png, render_top_down
+    world = bot.client.world
+    # A 17x17 region offset by one block gives the renderer enough context for
+    # north-edge height shading; crop back to the exact 16x16 chunk afterward.
+    rgb = render_top_down(
+        world, chunk_x * 16 + 7, chunk_z * 16 + 7, 8,
+        resource_pack=bot.client.resource_pack)
+    return encode_png(rgb[1:, 1:])
 
 
 @app.get("/api/textures/atlas.json")

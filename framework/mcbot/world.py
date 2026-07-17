@@ -16,6 +16,8 @@ at the wrong Y -- a known limitation.
 
 from __future__ import annotations
 
+import threading
+
 from .blocks import AIR_NAMES as _AIR_NAMES
 from .blocks import BlockTable
 from .chunk import parse_chunk_column
@@ -29,18 +31,28 @@ class World:
         self.protocol_version = protocol_version
         self.min_y = min_y
         self.chunks: dict[tuple[int, int], list] = {}
+        self.lock = threading.RLock()
+        self._revision = 0
+        self.chunk_revisions: dict[tuple[int, int], int] = {}
         # Chunk coords touched since the last render (new load or block edit).
         # A renderer can cache per-chunk work and only redo it for these.
         self.dirty_chunks: set[tuple[int, int]] = set()
 
     # -- loading -------------------------------------------------------
     def load_chunk(self, chunk_x: int, chunk_z: int, raw_chunk_data: bytes) -> None:
-        self.chunks[(chunk_x, chunk_z)] = parse_chunk_column(raw_chunk_data, self.protocol_version)
-        self.dirty_chunks.add((chunk_x, chunk_z))
+        sections = parse_chunk_column(raw_chunk_data, self.protocol_version)
+        coord = (chunk_x, chunk_z)
+        with self.lock:
+            self.chunks[coord] = sections
+            self.dirty_chunks.add(coord)
+            self._touch(coord)
 
     def unload_chunk(self, chunk_x: int, chunk_z: int) -> None:
-        self.chunks.pop((chunk_x, chunk_z), None)
-        self.dirty_chunks.add((chunk_x, chunk_z))
+        coord = (chunk_x, chunk_z)
+        with self.lock:
+            self.chunks.pop(coord, None)
+            self.chunk_revisions.pop(coord, None)
+            self.dirty_chunks.add(coord)
 
     # -- indexing --------------------------------------------------------
     def _locate(self, x: int, y: int, z: int):
@@ -69,12 +81,19 @@ class World:
         return self.block_table.name_for(state)
 
     def set_block_state(self, x: int, y: int, z: int, state_id: int) -> None:
-        loc = self._locate(x, y, z)
-        if loc is None:
-            return  # chunk not loaded; drop the update
-        sections, section_index, idx = loc
-        sections[section_index][idx] = state_id
-        self.dirty_chunks.add((x >> 4, z >> 4))
+        coord = (x >> 4, z >> 4)
+        with self.lock:
+            loc = self._locate(x, y, z)
+            if loc is None:
+                return  # chunk not loaded; drop the update
+            sections, section_index, idx = loc
+            sections[section_index][idx] = state_id
+            self.dirty_chunks.add(coord)
+            self._touch(coord)
+
+    def _touch(self, coord: tuple[int, int]) -> None:
+        self._revision += 1
+        self.chunk_revisions[coord] = self._revision
 
     def voxel_box(self, center_x: int, center_y: int, center_z: int,
                   radius: int, up: int, down: int):
