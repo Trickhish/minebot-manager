@@ -552,6 +552,14 @@ class Client:
         elif name == "ping" and self._has("play", "toServer", "pong"):
             params = self._decode(name, raw)
             self.send("pong", params)
+        elif (name == "chunk_batch_finished"
+              and self._has("play", "toServer", "chunk_batch_received")):
+            # Since 1.20.2 the server pauses terrain streaming until the client
+            # acknowledges each completed batch and reports an acceptable
+            # processing rate. Keep this on the socket thread: it is tiny and
+            # unblocks the next batch while chunk decoding continues off-thread.
+            self._decode(name, raw)
+            self.send("chunk_batch_received", {"chunksPerTick": 8.0})
         elif name == "position":
             # Server-authoritative position sync (spawn + teleports). Always
             # decoded and confirmed -- this is how we know where we are.
