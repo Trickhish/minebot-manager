@@ -193,6 +193,19 @@ class BehaviorDirector:
         for bot in self.manager.list():
             self._restart(bot)
 
+    def run_script_once(self, bot, script_id: str):
+        """Run a script now as a one-off behavior (for testing from the UI),
+        replacing the current behavior. Stopping it resumes the assigned role."""
+        self.clear(bot.id)
+        arm = _Arm(self, bot, behavior_script, script_id=script_id)
+        with self._lock:
+            self._arms[bot.id] = arm
+        arm.start()
+
+    def stop_behavior(self, bot):
+        """Stop whatever is running and fall back to the assigned role."""
+        self._restart(bot)
+
     def _restart(self, bot):
         self.clear(bot.id)
         sdef = roles.status_def(bot.role, bot.role_status)

@@ -30,6 +30,7 @@ import roles as roles_registry
 from behavior import BehaviorDirector
 from macros import MacroEngine, MacroError
 from manager import BotManager
+from scripts import ScriptError, ScriptStore, SAMPLE_CODE
 from models import ChatRequest, CreateBotRequest, NavigateRequest, ServerAuthRequest
 from textures import TILE, TextureAtlas
 
@@ -69,7 +70,9 @@ _setup_pathfinding_log()
 app = FastAPI(title="mcbot bot-host")
 manager = BotManager(store_path=BOTS_STORE, request_model=CreateBotRequest)
 macros = MacroEngine(manager, MACRO_STORE)
+script_store = ScriptStore(os.path.join(DATA_DIR, "scripts.json"))
 director = BehaviorDirector(manager)
+director.script_store = script_store
 manager.behavior_director = director
 atlas: TextureAtlas | None = None
 VOXEL_CACHE_TTL = 4.0
@@ -197,6 +200,55 @@ async def set_bot_role(bot_id: str, req: Request):
     script_id = body.get("script_id")
     role, status = director.set_role(bot, role, status, script_id)
     return {"ok": True, "role": role, "status": status, "script_id": script_id}
+
+
+# -- scripts -----------------------------------------------------------------
+@app.get("/api/scripts")
+async def list_scripts():
+    return {"scripts": script_store.list(), "sample": SAMPLE_CODE}
+
+
+@app.post("/api/scripts")
+async def create_script(req: Request):
+    try:
+        return script_store.create(await req.json())
+    except ScriptError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.put("/api/scripts/{script_id}")
+async def update_script(script_id: str, req: Request):
+    try:
+        return script_store.update(script_id, await req.json())
+    except ScriptError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.delete("/api/scripts/{script_id}")
+async def delete_script(script_id: str):
+    if not script_store.delete(script_id):
+        raise HTTPException(404, "no such script")
+    return {"ok": True}
+
+
+@app.post("/api/bots/{bot_id}/scripts/{script_id}/run")
+async def run_script(bot_id: str, script_id: str):
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    if script_store.get(script_id) is None:
+        raise HTTPException(404, "no such script")
+    director.run_script_once(bot, script_id)
+    return {"ok": True}
+
+
+@app.post("/api/bots/{bot_id}/behavior/stop")
+async def stop_behavior(bot_id: str):
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    director.stop_behavior(bot)
+    return {"ok": True}
 
 
 @app.post("/api/bots/{bot_id}/stop")

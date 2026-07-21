@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260721-roles">
+  <link rel="stylesheet" href="style.css?v=20260721-scripts">
 </head>
 <body>
   <header>
@@ -12,6 +12,7 @@
     <span id="conn-count" class="muted"></span>
     <div class="header-user">
       <button id="btn-macros" class="secondary">⚙ Macros</button>
+      <button id="btn-scripts" class="secondary">⌨ Scripts</button>
       <span id="user-name" class="muted"></span>
       <button id="btn-logout" class="secondary">Log out</button>
     </div>
@@ -218,6 +219,47 @@
     </div>
   </div>
 
+  <!-- Script manager modal -->
+  <div class="modal" id="script-modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2>Scripts</h2>
+        <button class="modal-close" id="script-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="macro-list-col">
+          <button id="script-new" class="full">＋ New script</button>
+          <ul class="macro-defs" id="script-defs"></ul>
+        </div>
+        <div class="macro-editor-col" id="script-editor" hidden>
+          <label>Name <input id="se-name" placeholder="my script"></label>
+          <label>Code
+            <textarea id="se-code" class="script-code" spellcheck="false"
+                      rows="16"></textarea>
+          </label>
+          <p class="muted script-help">
+            <code>bot</code> API: <code>bot.running</code>,
+            <code>bot.chat(msg)</code>, <code>bot.navigate(x, z)</code>,
+            <code>bot.move_to(x,y,z)</code>, <code>bot.look(yaw,pitch)</code>,
+            <code>bot.position()</code>, <code>bot.block_at(x,y,z)</code>,
+            <code>bot.distance_to(x,z)</code>, <code>bot.wait(s)</code>,
+            <code>bot.log(...)</code>. Also <code>math</code>, <code>random</code>.
+            Loop with <code>while bot.running:</code> and yield via
+            <code>bot.wait()</code>/<code>bot.navigate()</code>.
+            Trusted-author code — no imports/file/network.
+          </p>
+          <p class="error" id="se-error"></p>
+          <div class="row">
+            <button id="se-save">Save</button>
+            <button id="se-run" class="secondary">Run on selected bot</button>
+            <button id="se-delete" class="danger" hidden>Delete</button>
+            <button id="se-cancel" class="secondary">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal" id="vision-modal" hidden>
     <div class="modal-box vision-modal-box">
       <div class="modal-head">
@@ -336,6 +378,6 @@
   </div>
 
   <script src="vision.js?v=20260717-inventory-items"></script>
-  <script src="app.js?v=20260721-roles"></script>
+  <script src="app.js?v=20260721-scripts"></script>
 </body>
 </html>

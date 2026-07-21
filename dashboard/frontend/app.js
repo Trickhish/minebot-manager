@@ -2278,6 +2278,107 @@ $("#me-save").addEventListener("click", saveMacro);
 $("#me-delete").addEventListener("click", deleteMacro);
 $("#me-cancel").addEventListener("click", () => { $("#macro-editor").hidden = true; macroState.editing = null; renderDefs(); });
 
+// -- scripts ----------------------------------------------------------------
+const scriptState = { editing: null, sample: "" };
+
+async function loadScripts() {
+  try {
+    const data = await fetch("api/scripts").then(r => r.json());
+    state.scripts = data.scripts || [];
+    scriptState.sample = data.sample || "";
+  } catch { state.scripts = []; }
+}
+
+function renderScriptDefs() {
+  const ul = $("#script-defs");
+  ul.innerHTML = "";
+  for (const s of state.scripts) {
+    const li = el("li", "macro-def", s.name);
+    if (scriptState.editing === s.id) li.classList.add("active");
+    li.onclick = () => editScript(s.id);
+    ul.appendChild(li);
+  }
+}
+
+async function openScriptModal() {
+  await loadScripts();
+  renderScriptDefs();
+  $("#script-modal").hidden = false;
+}
+function closeScriptModal() {
+  $("#script-modal").hidden = true;
+  $("#script-editor").hidden = true;
+  scriptState.editing = null;
+}
+function closeScriptEditor() {
+  $("#script-editor").hidden = true;
+  scriptState.editing = null;
+  renderScriptDefs();
+}
+
+function newScript() {
+  scriptState.editing = null;
+  $("#se-name").value = "";
+  $("#se-code").value = scriptState.sample || "";
+  $("#se-error").textContent = "";
+  $("#se-delete").hidden = true;
+  $("#script-editor").hidden = false;
+  renderScriptDefs();
+}
+
+function editScript(id) {
+  const s = state.scripts.find(x => x.id === id);
+  if (!s) return;
+  scriptState.editing = id;
+  $("#se-name").value = s.name;
+  $("#se-code").value = s.code;
+  $("#se-error").textContent = "";
+  $("#se-delete").hidden = false;
+  $("#script-editor").hidden = false;
+  renderScriptDefs();
+}
+
+async function saveScript() {
+  const body = { name: $("#se-name").value.trim(), code: $("#se-code").value };
+  const editing = scriptState.editing;
+  try {
+    const r = await fetch(editing ? `api/scripts/${editing}` : "api/scripts", {
+      method: editing ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || "save failed");
+    const saved = await r.json();
+    await loadScripts();
+    editScript(saved.id);
+    if (!$("#role-script-field").hidden) renderScriptOptions($("#role-script-select").value);
+  } catch (e) { $("#se-error").textContent = e.message; }
+}
+
+async function deleteScript() {
+  if (!scriptState.editing) return;
+  await fetch(`api/scripts/${scriptState.editing}`, { method: "DELETE" });
+  await loadScripts();
+  closeScriptEditor();
+}
+
+async function runScriptOnBot() {
+  if (!state.selected) { $("#se-error").textContent = "select a bot first"; return; }
+  if (!scriptState.editing) { $("#se-error").textContent = "save the script first"; return; }
+  const r = await fetch(`api/bots/${state.selected}/scripts/${scriptState.editing}/run`, { method: "POST" });
+  if (!r.ok) $("#se-error").textContent = (await r.json()).detail || "run failed";
+  else closeScriptModal();
+}
+
+$("#btn-scripts").addEventListener("click", openScriptModal);
+$("#script-modal-close").addEventListener("click", closeScriptModal);
+$("#script-modal").addEventListener("click", (e) => { if (e.target.id === "script-modal") closeScriptModal(); });
+$("#script-new").addEventListener("click", newScript);
+$("#se-save").addEventListener("click", saveScript);
+$("#se-delete").addEventListener("click", deleteScript);
+$("#se-run").addEventListener("click", runScriptOnBot);
+$("#se-cancel").addEventListener("click", closeScriptEditor);
+
 // -- auth -------------------------------------------------------------------
 async function initUser() {
   try {
@@ -2293,5 +2394,6 @@ $("#btn-logout").addEventListener("click", async () => {
 // -- boot -------------------------------------------------------------------
 initUser();
 loadRoles();
+loadScripts();
 refreshBots();
 setInterval(refreshBots, 4000);  // keep the list/status dots fresh

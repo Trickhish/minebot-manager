@@ -747,6 +747,10 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 .role-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted, #9aa4b2); }
 .role-field select { font-size: 13px; padding: 4px 8px; }
 .role-behavior { font-size: 12px; font-style: italic; margin-left: auto; }
+
+.script-code { width: 100%; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; line-height: 1.45; tab-size: 4; resize: vertical; }
+.script-help { font-size: 11px; line-height: 1.5; }
+.script-help code { font-size: 11px; }
 .macro-chip {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 5px 10px;
