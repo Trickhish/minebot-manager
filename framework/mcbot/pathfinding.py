@@ -156,27 +156,78 @@ def _nearest_start_node(x: int, y: float, z: int,
 _CARDINALS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _DIAGONALS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
 
-# Parkour: horizontal gap jumps in a cardinal direction. Maps the landing's
-# vertical offset -> the furthest reachable landing (blocks travelled, so a
-# distance of 4 clears a 3-wide hole -- a vanilla sprint jump). Downward jumps
-# get more air time and therefore more reach; upward jumps get less.
-_PARKOUR_REACH = {1: 3, 0: 4, -1: 4, -2: 4, -3: 5}
+_PLAYER_HALF_WIDTH = 0.3
 
 
-def _jump_clear(x: int, y: int, z: int, dx: int, dz: int, d: int, ny: int,
+def _build_jump_offsets() -> dict[int, list[tuple[int, int]]]:
+    """Landing offsets (dx, dz) reachable by a running/sprint jump, per rise dy.
+
+    Covers straight *and* oblique jumps (e.g. the classic 3-1) up to the
+    horizontal reach the physics can carry within a jump's air time. Cells that
+    are merely adjacent (|dx|,|dz| <= 1) are excluded -- those are handled by
+    the ordinary walk/diagonal moves. Upward jumps reach less far than flat or
+    downward ones.
+    """
+    # Max Euclidean horizontal reach of a jump landing dy blocks above takeoff.
+    reach = {1: 3.4, 0: 4.3, -1: 4.6, -2: 4.8, -3: 5.0}
+    offsets: dict[int, list[tuple[int, int]]] = {}
+    for dy, rmax in reach.items():
+        seen: set[tuple[int, int]] = set()
+        for dx in range(0, 5):
+            for dz in range(0, 5):
+                if max(dx, dz) <= 1 or math.hypot(dx, dz) > rmax:
+                    continue
+                for ax, az in ((dx, dz), (dz, dx)):
+                    for sx in (1, -1):
+                        for sz in (1, -1):
+                            seen.add((sx * ax, sz * az))
+        # Nearer landings first so A* expands the cheapest jump early.
+        offsets[dy] = sorted(seen, key=lambda o: (o[0] * o[0] + o[1] * o[1]))
+    return offsets
+
+
+_JUMP_OFFSETS = _build_jump_offsets()
+
+
+def _swept_columns(dx: int, dz: int) -> tuple[tuple[int, int], ...]:
+    """Block columns the player box sweeps over jumping from origin to (dx, dz).
+
+    Samples the straight takeoff->landing segment with the 0.6-wide footprint,
+    excluding the takeoff and landing columns themselves. Cached per offset.
+    """
+    r = _PLAYER_HALF_WIDTH
+    cells: set[tuple[int, int]] = set()
+    samples = 4 * (abs(dx) + abs(dz)) + 4
+    for i in range(samples + 1):
+        t = i / samples
+        px, pz = 0.5 + dx * t, 0.5 + dz * t
+        for ax in (px - r, px + r):
+            for az in (pz - r, pz + r):
+                cells.add((math.floor(ax), math.floor(az)))
+    cells.discard((0, 0))
+    cells.discard((dx, dz))
+    return tuple(sorted(cells))
+
+
+_SWEPT_CACHE: dict[tuple[int, int], tuple[tuple[int, int], ...]] = {}
+
+
+def _jump_clear(x: int, y: int, z: int, dx: int, dz: int, ny: int,
                 clear: Callable[[Node], bool]) -> bool:
-    """Whether the arc of a straight cardinal jump is unobstructed.
+    """Whether the arc of a jump from (x, y, z) to (x+dx, ny, z+dz) is clear.
 
-    Every column crossed between takeoff and landing must have a clear body
-    corridor tall enough for the jump apex, so the bot never launches into a
-    ceiling or clips a block poking into the gap.
+    Every column the player box crosses must have a clear body corridor tall
+    enough for the jump apex, so the bot never launches into a ceiling or clips
+    a block poking into the path.
     """
     lo, hi = min(y, ny), max(y, ny)
-    for k in range(1, d):
-        cx, cz = x + dx * k, z + dz * k
+    cols = _SWEPT_CACHE.get((dx, dz))
+    if cols is None:
+        cols = _SWEPT_CACHE[(dx, dz)] = _swept_columns(dx, dz)
+    for cx, cz in cols:
         # clear((c, by, c)) requires cells by and by+1 open, so scanning
         # by in [lo, hi+1] guarantees a 3-tall corridor over the gap.
-        if not all(clear((cx, by, cz)) for by in range(lo, hi + 2)):
+        if not all(clear((x + cx, by, z + cz)) for by in range(lo, hi + 2)):
             return False
     return True
 
@@ -186,6 +237,7 @@ def _neighbours(node: Node, standable: Callable[[Node], bool],
     """Yield ``(neighbour, kind)`` moves, kind in cardinal/diagonal/jump."""
     x, y, z = node
     # Cardinal moves: climb one block (step/jump), stay level, or drop.
+    gap_adjacent = False
     for dx, dz in _CARDINALS:
         nx, nz = x + dx, z + dz
         for ny in (y + 1, y, *(y - drop for drop in range(1, max_drop + 1))):
@@ -193,6 +245,8 @@ def _neighbours(node: Node, standable: Callable[[Node], bool],
             if standable(candidate):
                 yield candidate, "cardinal"
                 break
+        else:
+            gap_adjacent = True  # a wall or a hole borders this direction
     # Diagonal moves: only when both flanking columns are open so the wide
     # (0.6) player box slides through the corner instead of clipping it.
     for dx, dz in _DIAGONALS:
@@ -206,19 +260,21 @@ def _neighbours(node: Node, standable: Callable[[Node], bool],
                    for fy in range(lo, hi + 1)):
                 yield candidate, "diagonal"
             break
-    # Parkour gap jumps: a straight run-up and jump across open air. Only
-    # reachable when the arc is clear; A*'s costs keep these more expensive than
-    # walking the same span, so they are chosen only when there is no floor.
-    for dx, dz in _CARDINALS:
-        for dy, reach in _PARKOUR_REACH.items():
-            ny = y + dy
-            for d in range(2, reach + 1):
-                candidate = (x + dx * d, ny, z + dz * d)
-                if not standable(candidate):
-                    continue
-                if _jump_clear(x, y, z, dx, dz, d, ny, clear):
-                    yield candidate, "jump"
-                break  # nearest landing at this level; don't jump past it
+    # Parkour jumps: straight or oblique (e.g. the 3-1) run-up-and-jump. Upward
+    # jumps need a higher landing block to exist, so they are naturally sparse
+    # and always cheap to consider. Flat/downward jumps land readily on open
+    # terrain, so only bother when a gap or wall actually borders this node --
+    # otherwise walking is cheaper and generating them just bloats the search.
+    for dy, offsets in _JUMP_OFFSETS.items():
+        if dy <= 0 and not gap_adjacent:
+            continue
+        ny = y + dy
+        for dx, dz in offsets:
+            candidate = (x + dx, ny, z + dz)
+            if not standable(candidate):
+                continue
+            if _jump_clear(x, y, z, dx, dz, ny, clear):
+                yield candidate, "jump"
 
 
 def _reconstruct(came_from: dict[Node, Node], current: Node) -> list[Node]:
