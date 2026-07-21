@@ -861,11 +861,16 @@ class Client:
         self.emit("move", self.get_position())
 
     def control_step(self, forward, strafe, jump, sneak, yaw, pitch,
-                     seconds=0.05, double_jump=False, super_speed=False):
+                     seconds=0.05, double_jump=False, super_speed=False,
+                     speed_scale=None):
         """Apply one first-person control tick and report it to the server.
 
         This intentionally follows the same simple dead-reckoning model as
         ``move_to``, with lightweight jump/gravity and terrain following.
+
+        ``speed_scale`` overrides the horizontal speed multiplier when given
+        (used by the pathfinder to sprint across a gap jump); otherwise
+        ``super_speed`` selects the usual 2x creative speed.
         """
         forward = max(-1.0, min(1.0, float(forward)))
         strafe = max(-1.0, min(1.0, float(strafe)))
@@ -878,7 +883,10 @@ class Client:
         yaw = float(yaw) % 360.0
         pitch = max(-90.0, min(90.0, float(pitch)))
         radians = math.radians(yaw)
-        speed_multiplier = 2.0 if super_speed else 1.0
+        if speed_scale is not None:
+            speed_multiplier = max(0.1, float(speed_scale))
+        else:
+            speed_multiplier = 2.0 if super_speed else 1.0
         distance = (self.walk_speed * speed_multiplier
                     * (0.3 if sneak else 1.0) * seconds)
         self._control_until = _time.monotonic() + 0.2
@@ -1104,49 +1112,119 @@ class Client:
         self.emit("navigation", event("cancelled"))
 
     def _follow_path(self, generation, path, started, max_seconds):
-        """Walk path nodes. False requests a replan after lost progress."""
+        """Walk/jump path nodes. False requests a replan after lost progress."""
+        prev = None  # previous node's block column; None -> use live position
         for block_x, feet_y, block_z in path:
-            waypoint_x, waypoint_z = block_x + 0.5, block_z + 0.5
-            best = float("inf")
-            last_progress = _time.monotonic()
-            tick = 0
-            while self.running and self.state == "play":
-                if self._navigation_cancelled(generation):
-                    return False
-                if _time.monotonic() - started > max_seconds:
-                    return False
-                position = self.get_position()
-                dx = waypoint_x - position["x"]
-                dz = waypoint_z - position["z"]
-                horizontal = math.hypot(dx, dz)
-                vertical = abs(feet_y - position["y"])
-                distance = horizontal + vertical * 0.25
-                if horizontal <= 0.3 and vertical <= 0.65:
-                    break
-                now = _time.monotonic()
-                if distance < best - 0.08:
-                    best = distance
-                    last_progress = now
-                elif now - last_progress > 3.0:
-                    return False
+            if prev is None:
+                pos = self.get_position()
+                prev = (math.floor(pos["x"]), math.floor(pos["z"]))
+            span = max(abs(block_x - prev[0]), abs(block_z - prev[1]))
+            if span >= 2:
+                ok = self._follow_jump(
+                    generation, block_x, feet_y, block_z, started, max_seconds)
+            else:
+                ok = self._follow_walk(
+                    generation, block_x, feet_y, block_z, started, max_seconds)
+            if not ok:
+                return False
+            prev = (block_x, block_z)
+        return True
 
-                yaw = math.degrees(math.atan2(-dx, dz))
-                # Keep pushing forward through a climb so momentum carries the
-                # box onto the ledge; only ease off once stacked over the column
-                # to let a planned drop settle.
-                climbing = feet_y > position["y"] + 0.55
-                forward = 0.0 if (horizontal <= 0.22 and not climbing) else 1.0
-                # Full-block climbs need a real jump. Pulse on alternate ticks so
-                # control_step keeps seeing a rising edge (a held key fires once)
-                # and re-jumps within 0.1 s of landing if the first hop misses.
-                jump = (climbing
-                        and horizontal < 1.3
-                        and bool(position.get("on_ground"))
-                        and tick % 2 == 0)
-                self.control_step(
-                    forward, 0.0, jump, False, yaw, 0.0, 0.05)
-                tick += 1
-                _time.sleep(0.05)
+    def _follow_walk(self, generation, block_x, feet_y, block_z,
+                     started, max_seconds):
+        """Walk (and single-block climb) to one adjacent waypoint."""
+        waypoint_x, waypoint_z = block_x + 0.5, block_z + 0.5
+        best = float("inf")
+        last_progress = _time.monotonic()
+        tick = 0
+        while self.running and self.state == "play":
+            if self._navigation_cancelled(generation):
+                return False
+            if _time.monotonic() - started > max_seconds:
+                return False
+            position = self.get_position()
+            dx = waypoint_x - position["x"]
+            dz = waypoint_z - position["z"]
+            horizontal = math.hypot(dx, dz)
+            vertical = abs(feet_y - position["y"])
+            distance = horizontal + vertical * 0.25
+            if horizontal <= 0.3 and vertical <= 0.65:
+                return True
+            now = _time.monotonic()
+            if distance < best - 0.08:
+                best = distance
+                last_progress = now
+            elif now - last_progress > 3.0:
+                return False
+
+            yaw = math.degrees(math.atan2(-dx, dz))
+            # Keep pushing forward through a climb so momentum carries the
+            # box onto the ledge; only ease off once stacked over the column
+            # to let a planned drop settle.
+            climbing = feet_y > position["y"] + 0.55
+            forward = 0.0 if (horizontal <= 0.22 and not climbing) else 1.0
+            # Full-block climbs need a real jump. Pulse on alternate ticks so
+            # control_step keeps seeing a rising edge (a held key fires once)
+            # and re-jumps within 0.1 s of landing if the first hop misses.
+            jump = (climbing
+                    and horizontal < 1.3
+                    and bool(position.get("on_ground"))
+                    and tick % 2 == 0)
+            self.control_step(forward, 0.0, jump, False, yaw, 0.0, 0.05)
+            tick += 1
+            _time.sleep(0.05)
+        return True
+
+    def _follow_jump(self, generation, block_x, feet_y, block_z,
+                     started, max_seconds):
+        """Sprint-jump across a gap to a landing that is >1 block away.
+
+        Horizontal motion in ``control_step`` has no momentum -- each tick moves
+        exactly the commanded ``forward``. So we launch with a jump, fly toward
+        the landing at a speed scaled to the gap, then cut forward once stacked
+        over it and simply drop straight down onto the block.
+        """
+        land_x, land_z = block_x + 0.5, block_z + 0.5
+        start = self.get_position()
+        span = math.hypot(land_x - start["x"], land_z - start["z"])
+        # Reach ~ speed * 0.55 s of air time; scale so the gap is comfortably
+        # covered, then rely on cutting forward to avoid overshooting.
+        speed_scale = max(1.0, min(2.0, span / 1.7))
+        last_progress = _time.monotonic()
+        best = float("inf")
+        left_ground = False
+        while self.running and self.state == "play":
+            if self._navigation_cancelled(generation):
+                return False
+            if _time.monotonic() - started > max_seconds:
+                return False
+            position = self.get_position()
+            dx = land_x - position["x"]
+            dz = land_z - position["z"]
+            horizontal = math.hypot(dx, dz)
+            on_ground = bool(position.get("on_ground"))
+            vertical = abs(feet_y - position["y"])
+            # Arrived: back on the ground, over the landing column.
+            if left_ground and on_ground and horizontal <= 0.35 \
+                    and vertical <= 0.6:
+                return True
+            now = _time.monotonic()
+            if horizontal < best - 0.05:
+                best = horizontal
+                last_progress = now
+            elif now - last_progress > 2.0:
+                return False  # stuck / fell short -> replan
+
+            if not on_ground:
+                left_ground = True
+            yaw = math.degrees(math.atan2(-dx, dz))
+            # Launch from the ground; while airborne keep flying toward the
+            # landing until stacked over it, then release forward and fall.
+            jump = on_ground and not left_ground
+            forward = 1.0 if horizontal > 0.35 else 0.0
+            self.control_step(forward, 0.0, jump, False, yaw, 0.0, 0.05,
+                              speed_scale=speed_scale)
+            _time.sleep(0.05)
         return True
 
     def _navigate_direct_loop(self, generation, target_x, target_z, event):

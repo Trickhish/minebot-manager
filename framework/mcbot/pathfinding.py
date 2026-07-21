@@ -120,12 +120,18 @@ def find_path(world, start: tuple[float, float, float],
         if current[0] == tx and current[2] == tz:
             return PathResult(_reconstruct(came_from, current), visited)
 
-        for neighbour, diagonal in _neighbours(
+        for neighbour, kind in _neighbours(
                 current, standable, clear, max_drop):
             if not in_bounds(neighbour):
                 continue
             vertical = neighbour[1] - current[1]
-            base = 1.4142 if diagonal else 1.0
+            if kind == "jump":
+                # Distance travelled plus a penalty so walking always wins when
+                # there is a floor; a real gap has no cheaper cardinal route.
+                span = abs(neighbour[0] - current[0]) + abs(neighbour[2] - current[2])
+                base = span + 1.0
+            else:
+                base = 1.4142 if kind == "diagonal" else 1.0
             step_cost = base + (0.35 if vertical > 0 else 0.12 * abs(vertical))
             new_cost = queued_cost + step_cost
             if new_cost >= costs.get(neighbour, float("inf")):
@@ -150,18 +156,42 @@ def _nearest_start_node(x: int, y: float, z: int,
 _CARDINALS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 _DIAGONALS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
 
+# Parkour: horizontal gap jumps in a cardinal direction. Maps the landing's
+# vertical offset -> the furthest reachable landing (blocks travelled, so a
+# distance of 4 clears a 3-wide hole -- a vanilla sprint jump). Downward jumps
+# get more air time and therefore more reach; upward jumps get less.
+_PARKOUR_REACH = {1: 3, 0: 4, -1: 4, -2: 4, -3: 5}
+
+
+def _jump_clear(x: int, y: int, z: int, dx: int, dz: int, d: int, ny: int,
+                clear: Callable[[Node], bool]) -> bool:
+    """Whether the arc of a straight cardinal jump is unobstructed.
+
+    Every column crossed between takeoff and landing must have a clear body
+    corridor tall enough for the jump apex, so the bot never launches into a
+    ceiling or clips a block poking into the gap.
+    """
+    lo, hi = min(y, ny), max(y, ny)
+    for k in range(1, d):
+        cx, cz = x + dx * k, z + dz * k
+        # clear((c, by, c)) requires cells by and by+1 open, so scanning
+        # by in [lo, hi+1] guarantees a 3-tall corridor over the gap.
+        if not all(clear((cx, by, cz)) for by in range(lo, hi + 2)):
+            return False
+    return True
+
 
 def _neighbours(node: Node, standable: Callable[[Node], bool],
                 clear: Callable[[Node], bool], max_drop: int):
-    """Yield ``(neighbour, is_diagonal)`` reachable in one walking move."""
+    """Yield ``(neighbour, kind)`` moves, kind in cardinal/diagonal/jump."""
     x, y, z = node
-    # Cardinal moves: climb one block (jump), stay level, or drop.
+    # Cardinal moves: climb one block (step/jump), stay level, or drop.
     for dx, dz in _CARDINALS:
         nx, nz = x + dx, z + dz
         for ny in (y + 1, y, *(y - drop for drop in range(1, max_drop + 1))):
             candidate = (nx, ny, nz)
             if standable(candidate):
-                yield candidate, False
+                yield candidate, "cardinal"
                 break
     # Diagonal moves: only when both flanking columns are open so the wide
     # (0.6) player box slides through the corner instead of clipping it.
@@ -174,8 +204,21 @@ def _neighbours(node: Node, standable: Callable[[Node], bool],
             lo, hi = min(y, ny), max(y, ny)
             if all(clear((nx, fy, z)) and clear((x, fy, nz))
                    for fy in range(lo, hi + 1)):
-                yield candidate, True
+                yield candidate, "diagonal"
             break
+    # Parkour gap jumps: a straight run-up and jump across open air. Only
+    # reachable when the arc is clear; A*'s costs keep these more expensive than
+    # walking the same span, so they are chosen only when there is no floor.
+    for dx, dz in _CARDINALS:
+        for dy, reach in _PARKOUR_REACH.items():
+            ny = y + dy
+            for d in range(2, reach + 1):
+                candidate = (x + dx * d, ny, z + dz * d)
+                if not standable(candidate):
+                    continue
+                if _jump_clear(x, y, z, dx, dz, d, ny, clear):
+                    yield candidate, "jump"
+                break  # nearest landing at this level; don't jump past it
 
 
 def _reconstruct(came_from: dict[Node, Node], current: Node) -> list[Node]:
