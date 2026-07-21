@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -40,6 +42,27 @@ BOTS_STORE = os.path.join(DATA_DIR, "bots.json")
 DEFAULT_PACK = os.path.join(os.path.dirname(__file__), "..", "..",
                             "framework", "default_rpack.zip")
 RESOURCE_PACK = os.environ.get("RESOURCE_PACK", DEFAULT_PACK)
+
+# Persist the framework's structured pathfinding log (one JSON object per line)
+# so odd navigation behaviour can be analysed offline. Rotates to keep it small.
+PATHFINDING_LOG = os.path.join(DATA_DIR, "pathfinding.log")
+
+
+def _setup_pathfinding_log():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    logger = logging.getLogger("mcbot.pathfinding")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if any(getattr(h, "_mcbot_nav", False) for h in logger.handlers):
+        return
+    handler = RotatingFileHandler(
+        PATHFINDING_LOG, maxBytes=5_000_000, backupCount=3)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler._mcbot_nav = True
+    logger.addHandler(handler)
+
+
+_setup_pathfinding_log()
 
 app = FastAPI(title="mcbot bot-host")
 manager = BotManager(store_path=BOTS_STORE, request_model=CreateBotRequest)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import queue
 import sys
@@ -44,6 +45,12 @@ from .world import World
 # paletted-container format `chunk.py` parses -- world tracking is disabled
 # for these rather than silently misreading chunk bytes.
 _LEGACY_CHUNK_FORMAT_VERSIONS = {"1.8"}
+
+# Structured pathfinding log. Emits one JSON object per line describing each
+# plan and the outcome of every path segment, so odd navigation behaviour can
+# be replayed offline. Disabled unless the host attaches a handler (see
+# host.py); when off, ``_navlog`` short-circuits with negligible cost.
+_NAVLOG = logging.getLogger("mcbot.pathfinding")
 
 # -- first-person control physics (vanilla-tuned) -----------------------------
 # Player collision box: 0.6 wide (0.3 half-extent) x 1.8 tall.
@@ -1040,6 +1047,17 @@ class Client:
             self._navigation_active = None
             return True
 
+    def _navlog(self, nav_id, event, **fields):
+        """Append one JSON record to the pathfinding log (no-op if disabled)."""
+        if not _NAVLOG.isEnabledFor(logging.INFO):
+            return
+        record = {"ts": round(_time.time(), 3), "bot": self.username,
+                  "nav": nav_id, "ev": event, **fields}
+        try:
+            _NAVLOG.info(json.dumps(record, separators=(",", ":")))
+        except Exception:
+            pass  # logging must never break navigation
+
     def _navigate_loop(self, generation, target_x, target_z):
         target = {"x": target_x, "z": target_z}
         def event(phase, **details):
@@ -1061,24 +1079,33 @@ class Client:
         max_seconds = max(
             20.0, initial_distance / max(self.walk_speed, 0.1) * 5.0)
         replans = 0
+        self._navlog(
+            generation, "start", target=[round(target_x, 2), round(target_z, 2)],
+            start=[round(initial["x"], 2), round(initial["y"], 2),
+                   round(initial["z"], 2)],
+            distance=round(initial_distance, 1), budget_s=round(max_seconds, 1))
 
         while self.running and self.state == "play":
             if self._navigation_cancelled(generation):
+                self._navlog(generation, "cancelled", replan=replans)
                 self.emit("navigation", event("cancelled"))
                 return
             position = self.get_position()
             if math.hypot(
                     target_x - position["x"], target_z - position["z"]) <= 0.7:
                 self._finish_navigation(generation)
+                self._navlog(generation, "arrived", replan=replans)
                 self.emit("navigation", event("arrived"))
                 return
 
             if _time.monotonic() - started > max_seconds:
                 self._finish_navigation(generation)
+                self._navlog(generation, "timeout", replan=replans)
                 self.emit("navigation", event("stuck"))
                 return
 
             self.emit("navigation", event("planning", replan=replans))
+            plan_t0 = _time.monotonic()
             with self.world.lock:
                 result = find_path(
                     self.world,
@@ -1086,25 +1113,38 @@ class Client:
                     (target_x, target_z),
                     _is_passable,
                 )
+            plan_ms = round((_time.monotonic() - plan_t0) * 1000, 1)
             if result is None:
                 self._finish_navigation(generation)
+                self._navlog(
+                    generation, "no_path", replan=replans, plan_ms=plan_ms,
+                    at=[round(position["x"], 2), round(position["y"], 2),
+                        round(position["z"], 2)])
                 self.emit("navigation", event("no_path", replan=replans))
                 return
 
             path = result.nodes[1:]
+            self._navlog(
+                generation, "plan", replan=replans, plan_ms=plan_ms,
+                waypoints=len(path), visited=result.visited,
+                path=[list(n) for n in result.nodes[:200]],
+                truncated=len(result.nodes) > 200)
             self.emit("navigation", event(
                 "path_found", waypoints=len(path), visited=result.visited,
                 replan=replans))
             if self._follow_path(generation, path, started, max_seconds):
                 self._finish_navigation(generation)
+                self._navlog(generation, "arrived", replan=replans)
                 self.emit("navigation", event("arrived"))
                 return
             if self._navigation_cancelled(generation):
+                self._navlog(generation, "cancelled", replan=replans)
                 self.emit("navigation", event("cancelled"))
                 return
             replans += 1
             if replans > 3:
                 self._finish_navigation(generation)
+                self._navlog(generation, "stuck", replans=replans)
                 self.emit("navigation", event("stuck", replans=replans))
                 return
 
@@ -1114,19 +1154,37 @@ class Client:
     def _follow_path(self, generation, path, started, max_seconds):
         """Walk/jump path nodes. False requests a replan after lost progress."""
         prev = None  # previous node's block column; None -> use live position
-        for block_x, feet_y, block_z in path:
+        for index, (block_x, feet_y, block_z) in enumerate(path):
             if prev is None:
                 pos = self.get_position()
                 prev = (math.floor(pos["x"]), math.floor(pos["z"]))
             span = max(abs(block_x - prev[0]), abs(block_z - prev[1]))
-            if span >= 2:
+            kind = "jump" if span >= 2 else "walk"
+            seg_t0 = _time.monotonic()
+            if kind == "jump":
                 ok = self._follow_jump(
                     generation, block_x, feet_y, block_z, started, max_seconds)
             else:
                 ok = self._follow_walk(
                     generation, block_x, feet_y, block_z, started, max_seconds)
             if not ok:
+                after = self.get_position()
+                self._navlog(
+                    generation, "segment_fail", index=index, kind=kind,
+                    frm=list(prev), to=[block_x, feet_y, block_z],
+                    took_ms=round((_time.monotonic() - seg_t0) * 1000, 1),
+                    at=[round(after["x"], 2), round(after["y"], 2),
+                        round(after["z"], 2)],
+                    on_ground=bool(after.get("on_ground")))
                 return False
+            if kind == "jump":  # jumps are the usual culprit; record each one
+                after = self.get_position()
+                self._navlog(
+                    generation, "jump_ok", index=index,
+                    frm=list(prev), to=[block_x, feet_y, block_z],
+                    took_ms=round((_time.monotonic() - seg_t0) * 1000, 1),
+                    at=[round(after["x"], 2), round(after["y"], 2),
+                        round(after["z"], 2)])
             prev = (block_x, block_z)
         return True
 
