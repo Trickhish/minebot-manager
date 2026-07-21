@@ -1250,7 +1250,7 @@ class Client:
         speed_scale = max(1.0, min(2.0, span / 1.7))
         last_progress = _time.monotonic()
         best = float("inf")
-        left_ground = False
+        launched = False
         while self.running and self.state == "play":
             if self._navigation_cancelled(generation):
                 return False
@@ -1263,7 +1263,7 @@ class Client:
             on_ground = bool(position.get("on_ground"))
             vertical = abs(feet_y - position["y"])
             # Arrived: back on the ground, over the landing column.
-            if left_ground and on_ground and horizontal <= 0.35 \
+            if launched and on_ground and horizontal <= 0.35 \
                     and vertical <= 0.6:
                 return True
             now = _time.monotonic()
@@ -1273,15 +1273,26 @@ class Client:
             elif now - last_progress > 2.0:
                 return False  # stuck / fell short -> replan
 
-            if not on_ground:
-                left_ground = True
             yaw = math.degrees(math.atan2(-dx, dz))
-            # Launch from the ground; while airborne keep flying toward the
-            # landing until stacked over it, then release forward and fall.
-            jump = on_ground and not left_ground
-            forward = 1.0 if horizontal > 0.35 else 0.0
-            self.control_step(forward, 0.0, jump, False, yaw, 0.0, 0.05,
-                              speed_scale=speed_scale)
+            if not on_ground and not launched:
+                # The approach may finish mid-hop (a +1 climb ends airborne).
+                # Wait to settle back onto the takeoff before committing, so the
+                # jump launches with a real upward velocity instead of gliding
+                # off the apex and sinking short.
+                self.control_step(0.0, 0.0, False, False, yaw, 0.0, 0.05)
+            elif on_ground:
+                # Launch from the takeoff (or re-launch after landing short of
+                # the target -- a held key only fires once, so releasing between
+                # attempts is implicit because the airborne ticks send jump off).
+                self.control_step(1.0, 0.0, True, False, yaw, 0.0, 0.05,
+                                  speed_scale=speed_scale)
+                launched = True
+            else:
+                # Airborne after launch: fly toward the landing, then release
+                # forward once stacked over it and drop straight down.
+                forward = 1.0 if horizontal > 0.35 else 0.0
+                self.control_step(forward, 0.0, False, False, yaw, 0.0, 0.05,
+                                  speed_scale=speed_scale)
             _time.sleep(0.05)
         return True
 
