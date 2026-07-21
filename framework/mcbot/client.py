@@ -1131,14 +1131,18 @@ class Client:
                     return False
 
                 yaw = math.degrees(math.atan2(-dx, dz))
-                # Wait over the destination column while gravity completes a
-                # planned drop. One-tick jump pulses help full-block climbs on
-                # servers whose collision correction is stricter than ours.
-                forward = 0.0 if horizontal <= 0.22 else 1.0
-                jump = (feet_y > position["y"] + 0.55
-                        and horizontal < 1.1
+                # Keep pushing forward through a climb so momentum carries the
+                # box onto the ledge; only ease off once stacked over the column
+                # to let a planned drop settle.
+                climbing = feet_y > position["y"] + 0.55
+                forward = 0.0 if (horizontal <= 0.22 and not climbing) else 1.0
+                # Full-block climbs need a real jump. Pulse on alternate ticks so
+                # control_step keeps seeing a rising edge (a held key fires once)
+                # and re-jumps within 0.1 s of landing if the first hop misses.
+                jump = (climbing
+                        and horizontal < 1.3
                         and bool(position.get("on_ground"))
-                        and tick % 6 == 0)
+                        and tick % 2 == 0)
                 self.control_step(
                     forward, 0.0, jump, False, yaw, 0.0, 0.05)
                 tick += 1

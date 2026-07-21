@@ -45,6 +45,7 @@ def find_path(world, start: tuple[float, float, float],
     if loaded_chunks is not None and (tx >> 4, tz >> 4) not in loaded_chunks:
         return None
     standable_cache: dict[Node, bool] = {}
+    clear_cache: dict[Node, bool] = {}
 
     def standable(node: Node) -> bool:
         cached = standable_cache.get(node)
@@ -68,6 +69,26 @@ def find_path(world, start: tuple[float, float, float],
         standable_cache[node] = value
         return value
 
+    def clear(node: Node) -> bool:
+        """Whether the player body (feet + head) fits in a column cell.
+
+        Used to keep a diagonal move from clipping the shared corner: both
+        flanking columns must be open for the 0.6-wide box to pass through.
+        """
+        cached = clear_cache.get(node)
+        if cached is not None:
+            return cached
+        x, y, z = node
+        feet = world.block_name_at(x, y, z)
+        head = world.block_name_at(x, y + 1, z)
+        value = (
+            feet is not None and head is not None
+            and is_passable(feet) and is_passable(head)
+            and feet not in _BODY_HAZARDS and head not in _BODY_HAZARDS
+        )
+        clear_cache[node] = value
+        return value
+
     start_node = _nearest_start_node(start_x, sy, start_z, standable)
     if start_node is None:
         return None
@@ -81,8 +102,9 @@ def find_path(world, start: tuple[float, float, float],
         return abs(x - start_x) + abs(z - start_z) <= search_radius
 
     def heuristic(node: Node) -> float:
-        x, _, z = node
-        return abs(tx - x) + abs(tz - z)
+        # Octile distance: admissible once diagonal moves are allowed.
+        dx, dz = abs(tx - node[0]), abs(tz - node[2])
+        return (dx + dz) - 0.5858 * min(dx, dz)
 
     frontier: list[tuple[float, float, Node]] = []
     heapq.heappush(frontier, (heuristic(start_node), 0.0, start_node))
@@ -98,11 +120,13 @@ def find_path(world, start: tuple[float, float, float],
         if current[0] == tx and current[2] == tz:
             return PathResult(_reconstruct(came_from, current), visited)
 
-        for neighbour in _neighbours(current, standable, max_drop):
+        for neighbour, diagonal in _neighbours(
+                current, standable, clear, max_drop):
             if not in_bounds(neighbour):
                 continue
             vertical = neighbour[1] - current[1]
-            step_cost = 1.0 + (0.35 if vertical > 0 else 0.12 * abs(vertical))
+            base = 1.4142 if diagonal else 1.0
+            step_cost = base + (0.35 if vertical > 0 else 0.12 * abs(vertical))
             new_cost = queued_cost + step_cost
             if new_cost >= costs.get(neighbour, float("inf")):
                 continue
@@ -123,16 +147,35 @@ def _nearest_start_node(x: int, y: float, z: int,
                  if standable((x, candidate, z))), None)
 
 
+_CARDINALS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+_DIAGONALS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+
+
 def _neighbours(node: Node, standable: Callable[[Node], bool],
-                max_drop: int):
+                clear: Callable[[Node], bool], max_drop: int):
+    """Yield ``(neighbour, is_diagonal)`` reachable in one walking move."""
     x, y, z = node
-    for dx, dz in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+    # Cardinal moves: climb one block (jump), stay level, or drop.
+    for dx, dz in _CARDINALS:
         nx, nz = x + dx, z + dz
-        for ny in (y, y + 1, *(y - drop for drop in range(1, max_drop + 1))):
+        for ny in (y + 1, y, *(y - drop for drop in range(1, max_drop + 1))):
             candidate = (nx, ny, nz)
             if standable(candidate):
-                yield candidate
+                yield candidate, False
                 break
+    # Diagonal moves: only when both flanking columns are open so the wide
+    # (0.6) player box slides through the corner instead of clipping it.
+    for dx, dz in _DIAGONALS:
+        nx, nz = x + dx, z + dz
+        for ny in (y + 1, y, y - 1):
+            candidate = (nx, ny, nz)
+            if not standable(candidate):
+                continue
+            lo, hi = min(y, ny), max(y, ny)
+            if all(clear((nx, fy, z)) and clear((x, fy, nz))
+                   for fy in range(lo, hi + 1)):
+                yield candidate, True
+            break
 
 
 def _reconstruct(came_from: dict[Node, Node], current: Node) -> list[Node]:
