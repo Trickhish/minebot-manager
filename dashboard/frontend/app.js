@@ -44,10 +44,20 @@ const api = {
   stop(id) { return fetch(`api/bots/${id}/stop`, { method: "POST" }); },
   connect(id) { return fetch(`api/bots/${id}/connect`, { method: "POST" }); },
   remove(id) { return fetch(`api/bots/${id}`, { method: "DELETE" }); },
+  async roles() { return fetch("api/roles").then(r => r.json()); },
+  async setRole(id, role, status, scriptId) {
+    const r = await fetch(`api/bots/${id}/role`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role, status, script_id: scriptId || null }),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    return r.json();
+  },
 };
 
 const state = {
   bots: [], selected: null, ws: null,
+  roles: [], scripts: [],
   inventory: null,
   mapTimer: null, mapBusy: false, mapGeneration: 0,
   mapCenter: null, mapFollow: true, mapPosition: null, mapScale: 4,
@@ -142,6 +152,7 @@ function resetPanels() {
   $("#vitals").hidden = true;
   renderInventory(null);
   $("#macro-bar").innerHTML = "";
+  $("#role-behavior").textContent = "—";
 }
 
 function openSocket(id) {
@@ -178,6 +189,11 @@ function onLiveEvent(ev) {
   if (ev.type === "stats") { renderVitals(ev.data); if (ev.data.position) { applyPosition(ev.data.position); Vision.setPose(ev.data.position); } }
   if (ev.type === "inventory") renderInventory(ev.data);
   if (ev.type === "navigation") applyNavigation(ev.data);
+  if (ev.type === "role" && bot) {
+    bot.role = ev.data.role; bot.status = ev.data.status; bot.script_id = ev.data.script_id;
+    renderRoleBar(ev.data.role, ev.data.status, ev.data.script_id);
+  }
+  if (ev.type === "behavior") applyBehavior(ev.data);
   if (ev.type === "macro" && (ev.data.phase === "started" || ev.data.phase === "finished"
       || ev.data.phase === "cancelled")) loadMacroBar(ev.bot_id);
   if (ev.type === "error") { $("#detail-error").textContent = ev.data.message; applyStatusPartial("error"); }
@@ -189,7 +205,87 @@ function applyStatus(s) {
   applyStatusPartial(s.state);
   if (s.position) applyPosition(s.position);
   if (s.last_error) $("#detail-error").textContent = s.last_error;
+  renderRoleBar(s.role, s.status, s.script_id);
 }
+
+// -- roles ------------------------------------------------------------------
+async function loadRoles() {
+  try {
+    const data = await api.roles();
+    state.roles = data.roles || [];
+  } catch { state.roles = []; }
+}
+
+function roleDef(roleId) { return state.roles.find(r => r.id === roleId); }
+
+function renderRoleBar(role, status, scriptId) {
+  const roleSel = $("#role-select");
+  if (!state.roles.length) return;
+  role = roleDef(role) ? role : (state.roles[0] && state.roles[0].id);
+  roleSel.innerHTML = "";
+  for (const r of state.roles) roleSel.appendChild(new Option(r.label, r.id));
+  roleSel.value = role;
+  renderStatusOptions(role, status);
+  updateRoleScriptField(scriptId);
+}
+
+function renderStatusOptions(role, status) {
+  const statusSel = $("#status-select");
+  const def = roleDef(role);
+  statusSel.innerHTML = "";
+  if (!def) return;
+  for (const s of def.statuses) {
+    const wip = s.kind === "placeholder" ? " (wip)" : "";
+    statusSel.appendChild(new Option(s.label + wip, s.id));
+  }
+  if (status && def.statuses.some(s => s.id === status)) statusSel.value = status;
+}
+
+function currentStatusDef() {
+  const def = roleDef($("#role-select").value);
+  if (!def) return null;
+  return def.statuses.find(s => s.id === $("#status-select").value) || null;
+}
+
+function updateRoleScriptField(scriptId) {
+  const sdef = currentStatusDef();
+  const isScript = sdef && sdef.kind === "script";
+  $("#role-script-field").hidden = !isScript;
+  if (isScript) renderScriptOptions(scriptId);
+}
+
+function renderScriptOptions(scriptId) {
+  const sel = $("#role-script-select");
+  sel.innerHTML = "";
+  if (!state.scripts.length) {
+    sel.appendChild(new Option("— no scripts —", ""));
+    return;
+  }
+  for (const s of state.scripts) sel.appendChild(new Option(s.name, s.id));
+  if (scriptId) sel.value = scriptId;
+}
+
+async function commitRole() {
+  if (!state.selected) return;
+  const role = $("#role-select").value;
+  const status = $("#status-select").value;
+  const sdef = currentStatusDef();
+  const scriptId = sdef && sdef.kind === "script" ? $("#role-script-select").value : null;
+  try {
+    await api.setRole(state.selected, role, status, scriptId);
+  } catch (e) { $("#detail-error").textContent = e.message; }
+}
+
+$("#role-select").addEventListener("change", () => {
+  renderStatusOptions($("#role-select").value);
+  updateRoleScriptField();
+  commitRole();
+});
+$("#status-select").addEventListener("change", () => {
+  updateRoleScriptField();
+  commitRole();
+});
+$("#role-script-select").addEventListener("change", commitRole);
 
 function applyStatusPartial(stateName, data) {
   const badge = $("#d-state");
@@ -202,6 +298,15 @@ function applyStatusPartial(stateName, data) {
   const running = ["connecting", "configuring", "play", "reconnecting"].includes(stateName);
   $("#btn-connect").hidden = running;
   $("#btn-stop").hidden = !running;
+}
+
+function applyBehavior(d) {
+  const el = $("#role-behavior");
+  if (!el) return;
+  if (d.phase === "log") el.textContent = d.detail || "";
+  else if (d.phase === "error") el.textContent = `error: ${d.detail || ""}`;
+  else if (d.phase === "started") el.textContent = "running…";
+  else if (d.phase === "stopped") el.textContent = "—";
 }
 
 function applyPosition(p) {
@@ -1115,6 +1220,134 @@ $("#map-live").addEventListener("change", (e) => {
 
 new ResizeObserver(resizeMapCanvas).observe(mapView);
 
+const mapPipGesture = {
+  mode: null, pointerId: null, x: 0, y: 0,
+  left: 0, top: 0, width: 0, height: 0,
+};
+let mapPipSavedRect = null;
+let mapPipResizeFrame = null;
+
+function scheduleMapPipResize() {
+  if (mapPipResizeFrame) return;
+  mapPipResizeFrame = requestAnimationFrame(() => {
+    mapPipResizeFrame = null;
+    Vision.resize();
+  });
+}
+
+function mapPipRect() {
+  const pip = $("#map-pip");
+  const stageRect = $("#map-stage").getBoundingClientRect();
+  const rect = pip.getBoundingClientRect();
+  return {
+    left: rect.left - stageRect.left,
+    top: rect.top - stageRect.top,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function setMapPipRect(rect) {
+  const pip = $("#map-pip");
+  const stage = $("#map-stage").getBoundingClientRect();
+  const minWidth = Math.min(150, stage.width);
+  const minHeight = Math.min(100, stage.height);
+  const width = Math.min(stage.width, Math.max(minWidth, rect.width));
+  const height = Math.min(stage.height, Math.max(minHeight, rect.height));
+  const left = Math.max(0, Math.min(stage.width - width, rect.left));
+  const top = Math.max(0, Math.min(stage.height - height, rect.top));
+  pip.style.left = `${left}px`;
+  pip.style.top = `${top}px`;
+  pip.style.right = "auto";
+  pip.style.bottom = "auto";
+  pip.style.width = `${width}px`;
+  pip.style.height = `${height}px`;
+  pip.style.aspectRatio = "auto";
+  scheduleMapPipResize();
+}
+
+function beginMapPipGesture(event, mode) {
+  if (event.button !== 0 || (mode === "move" && event.target.closest("button"))) return;
+  const rect = mapPipRect();
+  Object.assign(mapPipGesture, {
+    mode, pointerId: event.pointerId, x: event.clientX, y: event.clientY, ...rect,
+  });
+  setMapPipRect(rect);
+  $("#map-pip").classList.add(mode === "move" ? "moving" : "resizing");
+  event.currentTarget.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function moveMapPipGesture(event) {
+  if (event.pointerId !== mapPipGesture.pointerId || !mapPipGesture.mode) return;
+  const dx = event.clientX - mapPipGesture.x;
+  const dy = event.clientY - mapPipGesture.y;
+  if (mapPipGesture.mode === "move") {
+    setMapPipRect({
+      left: mapPipGesture.left + dx,
+      top: mapPipGesture.top + dy,
+      width: mapPipGesture.width,
+      height: mapPipGesture.height,
+    });
+  } else {
+    setMapPipRect({
+      left: mapPipGesture.left,
+      top: mapPipGesture.top,
+      width: mapPipGesture.width + dx,
+      height: mapPipGesture.height + dy,
+    });
+  }
+}
+
+function endMapPipGesture(event) {
+  if (event.pointerId !== mapPipGesture.pointerId) return;
+  $("#map-pip").classList.remove("moving", "resizing");
+  mapPipGesture.mode = null;
+  mapPipGesture.pointerId = null;
+}
+
+function toggleCompactMapPip(event) {
+  event.stopPropagation();
+  const pip = $("#map-pip");
+  const button = $("#map-pip-compact");
+  const rect = mapPipRect();
+  if (pip.classList.toggle("compact")) {
+    mapPipSavedRect = rect;
+    const width = Math.min(170, rect.width);
+    const height = Math.min(112, rect.height);
+    setMapPipRect({
+      left: rect.left + rect.width - width,
+      top: rect.top + rect.height - height,
+      width,
+      height,
+    });
+    button.textContent = "□";
+    button.title = "Restore bot view";
+    button.setAttribute("aria-label", "Restore bot view");
+  } else {
+    if (mapPipSavedRect) setMapPipRect(mapPipSavedRect);
+    mapPipSavedRect = null;
+    button.textContent = "−";
+    button.title = "Reduce bot view";
+    button.setAttribute("aria-label", "Reduce bot view");
+  }
+}
+
+const mapPipDrag = $("#map-pip-drag");
+const mapPipResize = $("#map-pip-resize");
+mapPipDrag.addEventListener("pointerdown", event => beginMapPipGesture(event, "move"));
+mapPipDrag.addEventListener("pointermove", moveMapPipGesture);
+mapPipDrag.addEventListener("pointerup", endMapPipGesture);
+mapPipDrag.addEventListener("pointercancel", endMapPipGesture);
+mapPipResize.addEventListener("pointerdown", event => beginMapPipGesture(event, "resize"));
+mapPipResize.addEventListener("pointermove", moveMapPipGesture);
+mapPipResize.addEventListener("pointerup", endMapPipGesture);
+mapPipResize.addEventListener("pointercancel", endMapPipGesture);
+$("#map-pip-compact").addEventListener("click", toggleCompactMapPip);
+window.addEventListener("resize", () => {
+  if (!$("#map-modal").hidden) setMapPipRect(mapPipRect());
+});
+
 function openMapModal() {
   if (!state.selected) return;
   closeVisionModal();
@@ -1124,7 +1357,11 @@ function openMapModal() {
   // refresh is throttled so map + PiP cannot starve Minecraft keepalives.
   Vision.setRefreshInterval(VISION_MAP_PIP_REFRESH_MS);
   $("#map-modal").hidden = false;
-  requestAnimationFrame(() => { resizeMapCanvas(); Vision.resize(); });
+  requestAnimationFrame(() => {
+    if ($("#map-pip").style.left) setMapPipRect(mapPipRect());
+    resizeMapCanvas();
+    Vision.resize();
+  });
 }
 function closeMapModal() {
   if ($("#map-modal").hidden) return;
@@ -2055,5 +2292,6 @@ $("#btn-logout").addEventListener("click", async () => {
 
 // -- boot -------------------------------------------------------------------
 initUser();
+loadRoles();
 refreshBots();
 setInterval(refreshBots, 4000);  // keep the list/status dots fresh

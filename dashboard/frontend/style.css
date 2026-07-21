@@ -332,7 +332,15 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
   padding: 0 12px;
 }
 .map-status.hidden { display: none; }
-.map-modal-box { width: 96vw; height: 94vh; }
+.modal-box.map-modal-box,
+.modal-box.vision-modal-box {
+  width: 100vw;
+  height: 100dvh;
+  border: 0;
+  border-radius: 0;
+}
+.map-modal-box > .modal-head,
+.vision-modal-box > .modal-head { padding: 10px 14px; }
 .map-stage { position: relative; flex: 1; min-height: 0; display: flex; background: #080b0e; }
 .map-stage .map-panel { flex: 1; min-height: 0; border: 0; border-radius: 0; }
 .map-pip {
@@ -342,6 +350,8 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
   bottom: 18px;
   width: clamp(220px, 28vw, 430px);
   aspect-ratio: 16 / 10;
+  min-width: 150px;
+  min-height: 100px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -352,16 +362,50 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 }
 .map-pip-label {
   flex: 0 0 auto;
-  padding: 5px 8px;
+  min-height: 27px;
+  padding: 3px 4px 3px 8px;
   background: #151b22;
   border-bottom: 1px solid #354151;
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
 }
+.map-pip-label button {
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+}
+.map-pip-label button:hover { color: var(--text); }
 .map-pip-stage { flex: 1; min-height: 0; display: flex; }
 .map-pip-stage > * { width: 100%; height: 100%; }
+.map-pip-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(21, 27, 34, .84);
+  color: #aeb8c3;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.map-pip.moving, .map-pip.resizing { transition: none; }
 
 /* -- vision (first-person WebGL view) ------------------------------------ */
 .vision-panel {
@@ -399,7 +443,6 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 #vision-prismarine[hidden] {
   display: none;
 }
-.vision-modal-box { width: 96vw; height: 94vh; }
 .vision-stage { position: relative; flex: 1; min-height: 0; background: #0a0d11; display: flex; }
 .vision-modal-actions,
 .vision-lookaround-toggle {
@@ -699,6 +742,11 @@ button.danger { background: transparent; color: var(--red); border-color: var(--
 /* -- macro run bar (in bot detail) --------------------------------------- */
 .macro-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .macro-bar:empty { display: none; }
+
+.role-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+.role-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted, #9aa4b2); }
+.role-field select { font-size: 13px; padding: 4px 8px; }
+.role-behavior { font-size: 12px; font-style: italic; margin-left: auto; }
 .macro-chip {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 5px 10px;
@@ -804,5 +852,5 @@ button.mini { padding: 3px 8px; font-size: 11px; }
   .detail-header-right { text-align: left; }
   .action-bar { align-items: flex-start; }
   .right-col { height: 520px; flex-direction: column; }
-  .map-pip { right: 10px; bottom: 10px; width: min(42vw, 230px); }
+  .map-pip { right: 10px; bottom: 10px; width: min(52vw, 230px); }
 }

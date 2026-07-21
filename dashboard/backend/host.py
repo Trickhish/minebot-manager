@@ -26,6 +26,8 @@ from logging.handlers import RotatingFileHandler
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 
+import roles as roles_registry
+from behavior import BehaviorDirector
 from macros import MacroEngine, MacroError
 from manager import BotManager
 from models import ChatRequest, CreateBotRequest, NavigateRequest, ServerAuthRequest
@@ -67,6 +69,8 @@ _setup_pathfinding_log()
 app = FastAPI(title="mcbot bot-host")
 manager = BotManager(store_path=BOTS_STORE, request_model=CreateBotRequest)
 macros = MacroEngine(manager, MACRO_STORE)
+director = BehaviorDirector(manager)
+manager.behavior_director = director
 atlas: TextureAtlas | None = None
 VOXEL_CACHE_TTL = 4.0
 _voxel_cache: dict[str, tuple] = {}
@@ -81,6 +85,7 @@ async def _startup():
     restored = manager.restore()
     if restored:
         print(f"[bot-host] restored {restored} bot(s) from {BOTS_STORE}")
+    director.resume_all()
     if RESOURCE_PACK and os.path.exists(RESOURCE_PACK):
         try:
             atlas = await asyncio.to_thread(TextureAtlas, RESOURCE_PACK, DATA_DIR)
@@ -171,11 +176,36 @@ async def navigate_bot(bot_id: str, req: NavigateRequest):
             "target": {"x": req.x, "z": req.z}}
 
 
+@app.get("/api/roles")
+async def list_roles():
+    """The role/status catalogue for the UI."""
+    return {"roles": roles_registry.registry()}
+
+
+@app.put("/api/bots/{bot_id}/role")
+async def set_bot_role(bot_id: str, req: Request):
+    bot = manager.get(bot_id)
+    if bot is None:
+        raise HTTPException(404, "no such bot")
+    body = await req.json()
+    role = body.get("role")
+    status = body.get("status")
+    if role not in roles_registry.ROLES:
+        raise HTTPException(400, f"unknown role {role!r}")
+    if roles_registry.status_def(role, status) is None:
+        raise HTTPException(400, f"unknown status {status!r} for role {role!r}")
+    script_id = body.get("script_id")
+    role, status = director.set_role(bot, role, status, script_id)
+    return {"ok": True, "role": role, "status": status, "script_id": script_id}
+
+
 @app.post("/api/bots/{bot_id}/stop")
 async def stop_bot(bot_id: str):
     bot = manager.get(bot_id)
     if bot is None:
         raise HTTPException(404, "no such bot")
+    if manager.behavior_director is not None:
+        manager.behavior_director.clear(bot_id)
     bot.stop()
     return {"ok": True}
 

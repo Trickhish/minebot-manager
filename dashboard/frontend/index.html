@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>mcbot dashboard</title>
-  <link rel="stylesheet" href="style.css?v=20260717-lookaround">
+  <link rel="stylesheet" href="style.css?v=20260721-roles">
 </head>
 <body>
   <header>
@@ -59,6 +59,19 @@
         <p class="error" id="detail-error"></p>
 
         <div class="macro-bar" id="macro-bar"></div>
+
+        <div class="role-bar" id="role-bar">
+          <label class="role-field">Role
+            <select id="role-select"></select>
+          </label>
+          <label class="role-field">Status
+            <select id="status-select"></select>
+          </label>
+          <label class="role-field role-script-field" id="role-script-field" hidden>Script
+            <select id="role-script-select"></select>
+          </label>
+          <span class="role-behavior muted" id="role-behavior">—</span>
+        </div>
 
         <div class="vitals" id="vitals" hidden>
           <span class="badge gamemode" id="v-gm">—</span>
@@ -277,8 +290,12 @@
       </div>
       <div class="map-stage" id="map-stage">
         <div class="map-pip" id="map-pip">
-          <div class="map-pip-label">Bot view</div>
+          <div class="map-pip-label" id="map-pip-drag">
+            <span>Bot view</span>
+            <button id="map-pip-compact" type="button" title="Reduce bot view" aria-label="Reduce bot view">−</button>
+          </div>
           <div class="map-pip-stage" id="map-pip-stage"></div>
+          <button class="map-pip-resize" id="map-pip-resize" type="button" title="Resize bot view" aria-label="Resize bot view">↘</button>
         </div>
       </div>
     </div>
@@ -319,6 +336,6 @@
   </div>
 
   <script src="vision.js?v=20260717-inventory-items"></script>
-  <script src="app.js?v=20260717-vision-inventory"></script>
+  <script src="app.js?v=20260721-roles"></script>
 </body>
 </html>

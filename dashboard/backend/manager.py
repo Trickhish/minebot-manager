@@ -66,6 +66,12 @@ class ManagedBot:
         self.auto_reconnect = getattr(req, "auto_reconnect", True)
 
         self.state = "created"
+        # Assigned job. Set/validated through BehaviorDirector.set_role; persisted
+        # in spec() so a bot resumes its role after a bot-host restart.
+        self.role = "idle"
+        # Named role_status (not `status`) to avoid shadowing the status() method.
+        self.role_status = "idle"
+        self.script_id: Optional[str] = None
         self.position: Optional[dict] = None
         self.created_at = time.time()
         self.connected_at: Optional[float] = None
@@ -105,6 +111,9 @@ class ManagedBot:
             "version": self.requested_version,
             "advertise_protocol": self.advertise_protocol,
             "auto_reconnect": self.auto_reconnect,
+            "role": self.role,
+            "status": self.role_status,
+            "script_id": self.script_id,
         }
 
     # -- status -------------------------------------------------------------
@@ -122,6 +131,9 @@ class ManagedBot:
             "last_error": self.last_error,
             "auto_reconnect": self.auto_reconnect,
             "reconnect_attempts": self.reconnect_attempts,
+            "role": self.role,
+            "status": self.role_status,
+            "script_id": self.script_id,
         }
 
     def _new_client(self) -> Client:
@@ -495,6 +507,8 @@ class BotManager:
                  request_model=None):
         self._bots: dict[str, ManagedBot] = {}
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        # Set by host.py; lets removal/shutdown tear down a bot's behavior.
+        self.behavior_director = None
         # Where the roster is persisted so bots survive a bot-host restart.
         # `request_model` reconstructs a validated request object from a
         # stored spec dict (the dashboard passes CreateBotRequest).
@@ -524,6 +538,8 @@ class BotManager:
         bot = self._bots.pop(bot_id, None)
         if bot is None:
             return False
+        if self.behavior_director is not None:
+            self.behavior_director.clear(bot_id)
         bot.stop()
         self._save()
         return True
@@ -555,8 +571,14 @@ class BotManager:
                 # Rosters created before automatic detection persisted the UI
                 # selection. Migrate them so restored bots detect as well.
                 spec = {**spec, "version": "auto", "advertise_protocol": None}
+                # Role fields aren't part of the create request model; apply them
+                # to the bot after construction so the payload stays unchanged.
+                role = spec.pop("role", "idle")
+                status = spec.pop("status", "idle")
+                script_id = spec.pop("script_id", None)
                 req = self._request_model(**spec) if self._request_model else _Spec(spec)
-                self.create(req, bot_id=bot_id, persist=False)
+                bot = self.create(req, bot_id=bot_id, persist=False)
+                bot.role, bot.role_status, bot.script_id = role, status, script_id
                 n += 1
             except Exception:  # noqa: BLE001 - skip a corrupt/invalid entry
                 continue
